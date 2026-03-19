@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <item
+        android:id="@+id/action_paste"
+        android:icon="@drawable/ic_paste"
+        android:title="粘贴"
+        android:visible="false"
+        app:showAsAction="ifRoom" />
+
+    <item
+        android:id="@+id/action_search"
+        android:icon="@drawable/ic_search"
+        android:title="搜索"
+        app:showAsAction="always" />
+
+    <item
+        android:id="@+id/action_random_folder"
+        android:icon="@drawable/ic_dice"
+        android:title="随机文件夹"
+        app:showAsAction="always" />
+
+    <item
+        android:id="@+id/action_more_main"
+        android:icon="@drawable/ic_more_vert"
+        android:title="更多"
+        app:showAsAction="always" />
+
+</menu>

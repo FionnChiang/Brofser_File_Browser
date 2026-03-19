@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  自适应图标前景层：108×108 dp 视口
+  安全区：以 (54,54) 为圆心、半径 36 的圆形区域（即 18–90 的正方形内切圆）
+  设计：白色文件夹 + 内部三条深蓝色横线（模拟文件列表）
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 文件夹标签（左上角小圆角矩形） -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="
+          M26,50
+          L26,44
+          Q26,40 30,40
+          L52,40
+          Q55,40 57,43
+          L61,50
+          Z" />
+
+    <!-- 文件夹主体（大圆角矩形） -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="
+          M26,48
+          Q26,44 30,44
+          L82,44
+          Q86,44 86,48
+          L86,78
+          Q86,82 82,82
+          L30,82
+          Q26,82 26,78
+          Z" />
+
+    <!-- 文件行 1（满行） -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#1565C0"
+        android:strokeWidth="4.5"
+        android:strokeLineCap="round"
+        android:pathData="M36,57 L72,57" />
+
+    <!-- 文件行 2（满行） -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#1565C0"
+        android:strokeWidth="4.5"
+        android:strokeLineCap="round"
+        android:pathData="M36,65 L72,65" />
+
+    <!-- 文件行 3（半行，模拟文件列表末尾） -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#1565C0"
+        android:strokeWidth="4.5"
+        android:strokeLineCap="round"
+        android:pathData="M36,73 L58,73" />
+
+</vector>

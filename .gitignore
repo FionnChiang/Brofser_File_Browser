@@ -1,0 +1,79 @@
+# Android Studio/IntelliJ IDEA
+*.iml
+.idea/
+.settings/
+.project
+.cache/
+.navigation/
+captures/
+
+# Gradle
+.gradle/
+.gradletasknamecache
+gradle-app.setting
+
+# Build
+build/
+bin/
+gen/
+out/
+
+# Generated files
+*.apk
+*.ap_
+*.aab
+*.dex
+*.class
+
+# Local configuration
+local.properties
+
+# Keystores
+*.jks
+*.keystore
+
+# External native build
+.externalNativeBuild/
+.cxx/
+
+# Google Services
+google-services.json
+
+# Logs
+*.log
+*.hprof
+
+# OS files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+*~
+.directory
+
+# Backup files
+*.bak
+*.orig
+*.rej
+*.swp
+\#*\#
+.\#*
+.*.swp
+.session.vim
+.netrwhist
+
+# Fastlane
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots
+fastlane/test_output
+fastlane/readme.md
+
+# Freeline
+freeline.py
+freeline/
+freeline_project_description.json
+
+# Exceptions (keep these in version control)
+!gradle/wrapper/gradle-wrapper.jar
+!gradle.properties

@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <group android:id="@+id/group_locations" android:checkableBehavior="single">
+        <item
+            android:id="@+id/nav_storage"
+            android:icon="@drawable/ic_folder"
+            android:title="本地存储"
+            android:checked="true" />
+    </group>
+
+    <item android:title="快捷访问">
+        <menu>
+            <item android:id="@+id/nav_downloads"  android:title="下载"   android:icon="@drawable/ic_file" />
+            <item android:id="@+id/nav_pictures"   android:title="图片"   android:icon="@drawable/ic_image" />
+            <item android:id="@+id/nav_music"      android:title="音乐"   android:icon="@drawable/ic_audio" />
+            <item android:id="@+id/nav_videos"     android:title="视频"   android:icon="@drawable/ic_video" />
+        </menu>
+    </item>
+
+    <!-- 书签快捷方式（动态添加，初始隐藏） -->
+    <item
+        android:id="@+id/nav_bookmarks_group"
+        android:title="书签快捷方式"
+        android:visible="false">
+        <menu>
+            <!-- 由 MainActivity.refreshNavShortcuts() 动态填充 -->
+        </menu>
+    </item>
+
+    <item android:title="更多">
+        <menu>
+            <item android:id="@+id/nav_settings" android:title="设置" />
+        </menu>
+    </item>
+
+</menu>

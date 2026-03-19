@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="colorPrimary">#1976D2</color>
+    <color name="colorPrimaryDark">#1565C0</color>
+    <color name="colorAccent">#FF4081</color>
+
+    <!-- 文件类型图标颜色 -->
+    <color name="color_folder">#FFA726</color>
+    <color name="color_image">#66BB6A</color>
+    <color name="color_video">#EF5350</color>
+    <color name="color_audio">#AB47BC</color>
+    <color name="color_text">#42A5F5</color>
+    <color name="color_file">#78909C</color>
+</resources>
