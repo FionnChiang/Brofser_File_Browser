@@ -3,6 +3,7 @@
 .idea/
 .settings/
 .project
+*.classpath
 .cache/
 .navigation/
 captures/
