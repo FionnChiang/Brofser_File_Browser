@@ -35,6 +35,17 @@ public class CropImageView extends View {
     private float handleRadius;
     private float minCropSize;
 
+    /** Fixed aspect ratio (width : height). 0 means free crop. */
+    private float aspectW = 0, aspectH = 0;
+
+    public void setAspectRatio(float w, float h) {
+        this.aspectW = w;
+        this.aspectH = h;
+        if (bitmap != null && getWidth() > 0) calcDisplayMatrix();
+    }
+
+    private boolean hasFixedAspect() { return aspectW > 0 && aspectH > 0; }
+
     public CropImageView(Context context) { super(context); init(context); }
     public CropImageView(Context context, AttributeSet a) { super(context, a); init(context); }
 
@@ -87,11 +98,28 @@ public class CropImageView extends View {
 
         imageRect.set(tx, ty, tx + bw * scale, ty + bh * scale);
 
-        // 默认裁切框：图片区域内缩 15%
-        float insetX = imageRect.width()  * 0.15f;
-        float insetY = imageRect.height() * 0.15f;
-        cropRect.set(imageRect.left  + insetX, imageRect.top    + insetY,
-                     imageRect.right - insetX, imageRect.bottom - insetY);
+        // 默认裁切框：固定比例居中，或自由内缩 15%
+        if (hasFixedAspect()) {
+            float imgW = imageRect.width(), imgH = imageRect.height();
+            float targetW, targetH;
+            if (imgW / imgH > aspectW / aspectH) {
+                // 图片比目标宽 → 以高度为准
+                targetH = imgH * 0.85f;
+                targetW = targetH * aspectW / aspectH;
+            } else {
+                // 图片比目标高 → 以宽度为准
+                targetW = imgW * 0.85f;
+                targetH = targetW * aspectH / aspectW;
+            }
+            float cx = imageRect.centerX(), cy = imageRect.centerY();
+            cropRect.set(cx - targetW / 2, cy - targetH / 2,
+                         cx + targetW / 2, cy + targetH / 2);
+        } else {
+            float insetX = imageRect.width()  * 0.15f;
+            float insetY = imageRect.height() * 0.15f;
+            cropRect.set(imageRect.left  + insetX, imageRect.top    + insetY,
+                         imageRect.right - insetX, imageRect.bottom - insetY);
+        }
         invalidate();
     }
 
@@ -186,22 +214,103 @@ public class CropImageView extends View {
                 cropRect.set(nl, nt, nr, nb);
                 break;
             }
-            case MODE_TL:
-                cropRect.left = clamp(cropRect.left + dx, imageRect.left, cropRect.right - minCropSize);
-                cropRect.top  = clamp(cropRect.top  + dy, imageRect.top,  cropRect.bottom - minCropSize);
+            case MODE_TL: {
+                if (hasFixedAspect()) {
+                    // Choose axis with larger intended change to drive resize
+                    float dxW = Math.abs(dx), dyW = Math.abs(dy) * aspectW / aspectH;
+                    float newW, newH, newLeft, newTop;
+                    if (dxW >= dyW) {
+                        newLeft = clamp(cropRect.left + dx, imageRect.left, cropRect.right - minCropSize);
+                        newW = cropRect.right - newLeft;
+                        newH = newW * aspectH / aspectW;
+                        newTop = cropRect.bottom - newH;
+                        if (newTop < imageRect.top) { newH = cropRect.bottom - imageRect.top; newW = newH * aspectW / aspectH; newLeft = cropRect.right - newW; newTop = imageRect.top; }
+                    } else {
+                        newTop = clamp(cropRect.top + dy, imageRect.top, cropRect.bottom - minCropSize);
+                        newH = cropRect.bottom - newTop;
+                        newW = newH * aspectW / aspectH;
+                        newLeft = cropRect.right - newW;
+                        if (newLeft < imageRect.left) { newW = cropRect.right - imageRect.left; newH = newW * aspectH / aspectW; newLeft = imageRect.left; newTop = cropRect.bottom - newH; }
+                    }
+                    cropRect.left = newLeft; cropRect.top = newTop;
+                } else {
+                    cropRect.left = clamp(cropRect.left + dx, imageRect.left, cropRect.right - minCropSize);
+                    cropRect.top  = clamp(cropRect.top  + dy, imageRect.top,  cropRect.bottom - minCropSize);
+                }
                 break;
-            case MODE_TR:
-                cropRect.right = clamp(cropRect.right + dx, cropRect.left + minCropSize, imageRect.right);
-                cropRect.top   = clamp(cropRect.top   + dy, imageRect.top,               cropRect.bottom - minCropSize);
+            }
+            case MODE_TR: {
+                if (hasFixedAspect()) {
+                    float dxW = Math.abs(dx), dyW = Math.abs(dy) * aspectW / aspectH;
+                    float newW, newH, newRight, newTop;
+                    if (dxW >= dyW) {
+                        newRight = clamp(cropRect.right + dx, cropRect.left + minCropSize, imageRect.right);
+                        newW = newRight - cropRect.left;
+                        newH = newW * aspectH / aspectW;
+                        newTop = cropRect.bottom - newH;
+                        if (newTop < imageRect.top) { newH = cropRect.bottom - imageRect.top; newW = newH * aspectW / aspectH; newRight = cropRect.left + newW; newTop = imageRect.top; }
+                    } else {
+                        newTop = clamp(cropRect.top + dy, imageRect.top, cropRect.bottom - minCropSize);
+                        newH = cropRect.bottom - newTop;
+                        newW = newH * aspectW / aspectH;
+                        newRight = cropRect.left + newW;
+                        if (newRight > imageRect.right) { newW = imageRect.right - cropRect.left; newH = newW * aspectH / aspectW; newRight = imageRect.right; newTop = cropRect.bottom - newH; }
+                    }
+                    cropRect.right = newRight; cropRect.top = newTop;
+                } else {
+                    cropRect.right = clamp(cropRect.right + dx, cropRect.left + minCropSize, imageRect.right);
+                    cropRect.top   = clamp(cropRect.top   + dy, imageRect.top,               cropRect.bottom - minCropSize);
+                }
                 break;
-            case MODE_BL:
-                cropRect.left   = clamp(cropRect.left   + dx, imageRect.left,  cropRect.right - minCropSize);
-                cropRect.bottom = clamp(cropRect.bottom + dy, cropRect.top + minCropSize, imageRect.bottom);
+            }
+            case MODE_BL: {
+                if (hasFixedAspect()) {
+                    float dxW = Math.abs(dx), dyW = Math.abs(dy) * aspectW / aspectH;
+                    float newW, newH, newLeft, newBottom;
+                    if (dxW >= dyW) {
+                        newLeft = clamp(cropRect.left + dx, imageRect.left, cropRect.right - minCropSize);
+                        newW = cropRect.right - newLeft;
+                        newH = newW * aspectH / aspectW;
+                        newBottom = cropRect.top + newH;
+                        if (newBottom > imageRect.bottom) { newH = imageRect.bottom - cropRect.top; newW = newH * aspectW / aspectH; newLeft = cropRect.right - newW; newBottom = imageRect.bottom; }
+                    } else {
+                        newBottom = clamp(cropRect.bottom + dy, cropRect.top + minCropSize, imageRect.bottom);
+                        newH = newBottom - cropRect.top;
+                        newW = newH * aspectW / aspectH;
+                        newLeft = cropRect.right - newW;
+                        if (newLeft < imageRect.left) { newW = cropRect.right - imageRect.left; newH = newW * aspectH / aspectW; newLeft = imageRect.left; newBottom = cropRect.top + newH; }
+                    }
+                    cropRect.left = newLeft; cropRect.bottom = newBottom;
+                } else {
+                    cropRect.left   = clamp(cropRect.left   + dx, imageRect.left,  cropRect.right - minCropSize);
+                    cropRect.bottom = clamp(cropRect.bottom + dy, cropRect.top + minCropSize, imageRect.bottom);
+                }
                 break;
-            case MODE_BR:
-                cropRect.right  = clamp(cropRect.right  + dx, cropRect.left + minCropSize, imageRect.right);
-                cropRect.bottom = clamp(cropRect.bottom + dy, cropRect.top  + minCropSize, imageRect.bottom);
+            }
+            case MODE_BR: {
+                if (hasFixedAspect()) {
+                    float dxW = Math.abs(dx), dyW = Math.abs(dy) * aspectW / aspectH;
+                    float newW, newH, newRight, newBottom;
+                    if (dxW >= dyW) {
+                        newRight = clamp(cropRect.right + dx, cropRect.left + minCropSize, imageRect.right);
+                        newW = newRight - cropRect.left;
+                        newH = newW * aspectH / aspectW;
+                        newBottom = cropRect.top + newH;
+                        if (newBottom > imageRect.bottom) { newH = imageRect.bottom - cropRect.top; newW = newH * aspectW / aspectH; newRight = cropRect.left + newW; newBottom = imageRect.bottom; }
+                    } else {
+                        newBottom = clamp(cropRect.bottom + dy, cropRect.top + minCropSize, imageRect.bottom);
+                        newH = newBottom - cropRect.top;
+                        newW = newH * aspectW / aspectH;
+                        newRight = cropRect.left + newW;
+                        if (newRight > imageRect.right) { newW = imageRect.right - cropRect.left; newH = newW * aspectH / aspectW; newRight = imageRect.right; newBottom = cropRect.top + newH; }
+                    }
+                    cropRect.right = newRight; cropRect.bottom = newBottom;
+                } else {
+                    cropRect.right  = clamp(cropRect.right  + dx, cropRect.left + minCropSize, imageRect.right);
+                    cropRect.bottom = clamp(cropRect.bottom + dy, cropRect.top  + minCropSize, imageRect.bottom);
+                }
                 break;
+            }
         }
     }
 

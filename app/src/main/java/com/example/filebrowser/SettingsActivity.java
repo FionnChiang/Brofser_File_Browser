@@ -87,9 +87,9 @@ public class SettingsActivity extends AppCompatActivity {
         String bgPath = prefs.getString("background_image_path", null);
         updateBgPreview(bgPath);
 
-        int dim = prefs.getInt("background_dim", 40);
-        seekBarDim.setProgress(dim);
-        tvDimValue.setText(dim + "%");
+        int opacity = prefs.getInt("background_opacity", 80);
+        seekBarDim.setProgress(opacity);
+        tvDimValue.setText(opacity + "%");
     }
 
     private void setupListeners() {
@@ -114,11 +114,11 @@ public class SettingsActivity extends AppCompatActivity {
             Toast.makeText(this, "背景已清除", Toast.LENGTH_SHORT).show();
         });
 
-        // 暗化程度
+        // 不透明度
         seekBarDim.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
                 tvDimValue.setText(progress + "%");
-                if (fromUser) prefs.edit().putInt("background_dim", progress).apply();
+                if (fromUser) prefs.edit().putInt("background_opacity", progress).apply();
             }
             @Override public void onStartTrackingTouch(SeekBar sb) {}
             @Override public void onStopTrackingTouch(SeekBar sb) {}
@@ -158,6 +158,12 @@ public class SettingsActivity extends AppCompatActivity {
             if (uri == null) return;
             Intent cropIntent = new Intent(this, CropActivity.class);
             cropIntent.putExtra(CropActivity.EXTRA_URI, uri.toString());
+            int contentW = prefs.getInt("content_width", 0);
+            int contentH = prefs.getInt("content_height", 0);
+            if (contentW > 0 && contentH > 0) {
+                cropIntent.putExtra(CropActivity.EXTRA_ASPECT_W, (float) contentW);
+                cropIntent.putExtra(CropActivity.EXTRA_ASPECT_H, (float) contentH);
+            }
             startActivityForResult(cropIntent, REQ_CROP);
         } else if (requestCode == REQ_CROP) {
             String path = data.getStringExtra(CropActivity.RESULT_PATH);

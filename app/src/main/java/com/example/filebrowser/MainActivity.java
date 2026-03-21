@@ -104,6 +104,10 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
     private TextView tvSelectionCount;
     private Button btnSelectAll;
 
+    // 剪贴板模式
+    private LinearLayout clipboardActionBar;
+    private boolean isClipboardMode = false;
+
     private ActionBarDrawerToggle drawerToggle;
     private Toolbar mainToolbar;
 
@@ -187,6 +191,7 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
         tvEmpty = findViewById(R.id.tvEmpty);
         selectionBar = findViewById(R.id.selectionBar);
         bottomActionBar = findViewById(R.id.bottomActionBar);
+        clipboardActionBar = findViewById(R.id.clipboardActionBar);
         tvSelectionCount = findViewById(R.id.tvSelectionCount);
 
         adapter = new FileAdapter(this, this);
@@ -247,8 +252,10 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
             public void onExitMultiSelect() {
                 selectionBar.setVisibility(View.GONE);
                 bottomActionBar.setVisibility(View.GONE);
-                if (isSearchMode) {
-                    // 搜索模式下退出多选：恢复搜索模式的退出箭头
+                if (isClipboardMode) {
+                    // 退出多选后立即进入剪贴板模式，工具栏由 enterClipboardMode 接管
+                    applyClipboardModeToolbar();
+                } else if (isSearchMode) {
                     drawerToggle.setDrawerIndicatorEnabled(false);
                     mainToolbar.setNavigationIcon(R.drawable.ic_arrow_back);
                     drawerToggle.setToolbarNavigationClickListener(v -> exitSearchMode());
@@ -299,6 +306,14 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
             if (sel.isEmpty()) { toast("请先选择文件"); return; }
             showMoreOptions(sel);
         });
+
+        // 剪贴板模式底部栏
+        findViewById(R.id.actionClipboardPaste).setOnClickListener(v -> {
+            doPaste();
+            exitClipboardMode();
+        });
+        findViewById(R.id.actionClipboardNewFolder).setOnClickListener(v -> showNewFolderDialog());
+        findViewById(R.id.actionClipboardView).setOnClickListener(v -> showClipboardFiles());
     }
 
     private void restoreToolbarTitle() {
@@ -312,22 +327,93 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
         supportInvalidateOptionsMenu();
     }
 
+    // ─── 剪贴板模式 ────────────────────────────────────────────────────────────
+
+    /** 仅切换工具栏图标为 X，不改变 clipboardActionBar 可见性（由 doCut/doCopy 控制） */
+    private void applyClipboardModeToolbar() {
+        drawerToggle.setDrawerIndicatorEnabled(false);
+        mainToolbar.setNavigationIcon(R.drawable.ic_close);
+        drawerToggle.setToolbarNavigationClickListener(v -> exitClipboardMode());
+        drawerLayout.setDrawerLockMode(DrawerLayout.LOCK_MODE_LOCKED_CLOSED);
+        String modeLabel = FileClipboard.mode == FileClipboard.CUT ? "剪切" : "复制";
+        if (getSupportActionBar() != null)
+            getSupportActionBar().setTitle(modeLabel + " " + FileClipboard.files.size() + " 项");
+        supportInvalidateOptionsMenu();
+    }
+
+    private void exitClipboardMode() {
+        isClipboardMode = false;
+        FileClipboard.clear();
+        clipboardActionBar.setVisibility(View.GONE);
+        drawerToggle.setDrawerIndicatorEnabled(true);
+        drawerToggle.syncState();
+        drawerToggle.setToolbarNavigationClickListener(v -> {
+            if (adapter != null && adapter.isMultiSelectMode()) adapter.exitMultiSelectMode();
+        });
+        drawerLayout.setDrawerLockMode(DrawerLayout.LOCK_MODE_UNLOCKED);
+        restoreToolbarTitle();
+    }
+
+    private void showClipboardFiles() {
+        if (!FileClipboard.hasContent()) return;
+        String modeStr = FileClipboard.mode == FileClipboard.CUT ? "剪切" : "复制";
+        StringBuilder sb = new StringBuilder();
+        for (File f : FileClipboard.files) {
+            sb.append("• ").append(f.getName()).append("\n");
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(modeStr + "中的文件（共 " + FileClipboard.files.size() + " 项）")
+                .setMessage(sb.toString().trim())
+                .setPositiveButton("确定", null)
+                .show();
+    }
+
+    private void showNewFolderDialog() {
+        if (tabDirectories.isEmpty()) return;
+        EditText editText = new EditText(this);
+        editText.setHint("文件夹名称");
+        editText.setSingleLine(true);
+        int pad = (int) (16 * getResources().getDisplayMetrics().density);
+        editText.setPadding(pad, pad / 2, pad, pad / 2);
+        new AlertDialog.Builder(this)
+                .setTitle("新建文件夹")
+                .setView(editText)
+                .setPositiveButton("创建", (d, w) -> {
+                    String name = editText.getText().toString().trim();
+                    if (name.isEmpty()) { toast("文件夹名称不能为空"); return; }
+                    File newDir = new File(tabDirectories.get(activeTabIndex), name);
+                    if (newDir.exists()) { toast("已存在同名文件夹"); return; }
+                    if (newDir.mkdir()) {
+                        loadFiles(tabDirectories.get(activeTabIndex));
+                        toast("文件夹已创建");
+                    } else {
+                        toast("创建失败");
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
     // ─── 文件操作 ──────────────────────────────────────────────────────────────
 
     private void doCut(List<FileItem> items) {
         List<File> files = itemsToFiles(items);
         FileClipboard.set(FileClipboard.CUT, files);
-        adapter.exitMultiSelectMode();
-        invalidateOptionsMenu();
-        toast(files.size() + " 项已剪切，导航到目标目录后粘贴");
+        isClipboardMode = true;
+        adapter.exitMultiSelectMode(); // onExitMultiSelect 会调用 applyClipboardModeToolbar
+        clipboardActionBar.setVisibility(View.VISIBLE);
+        TextView label = clipboardActionBar.findViewById(R.id.tvClipboardPasteLabel);
+        if (label != null) label.setText("粘贴 " + files.size() + " 个剪切项");
     }
 
     private void doCopy(List<FileItem> items) {
         List<File> files = itemsToFiles(items);
         FileClipboard.set(FileClipboard.COPY, files);
-        adapter.exitMultiSelectMode();
-        invalidateOptionsMenu();
-        toast(files.size() + " 项已复制，导航到目标目录后粘贴");
+        isClipboardMode = true;
+        adapter.exitMultiSelectMode(); // onExitMultiSelect 会调用 applyClipboardModeToolbar
+        clipboardActionBar.setVisibility(View.VISIBLE);
+        TextView label = clipboardActionBar.findViewById(R.id.tvClipboardPasteLabel);
+        if (label != null) label.setText("粘贴 " + files.size() + " 个复制项");
     }
 
     private void doPaste() {
@@ -335,7 +421,6 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
         List<File> sources = new ArrayList<>(FileClipboard.files);
         int mode = FileClipboard.mode;
         FileClipboard.clear();
-        invalidateOptionsMenu();
 
         new Thread(() -> {
             int success = 0, fail = 0;
@@ -564,14 +649,13 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
     @Override
     public boolean onPrepareOptionsMenu(Menu menu) {
         boolean multiSelect = adapter != null && adapter.isMultiSelectMode();
-        MenuItem pasteItem = menu.findItem(R.id.action_paste);
-        if (pasteItem != null) pasteItem.setVisible(FileClipboard.hasContent() && !multiSelect && !isSearchMode);
+        boolean hideAll = multiSelect || isSearchMode || isClipboardMode;
         MenuItem diceItem = menu.findItem(R.id.action_random_folder);
-        if (diceItem != null) diceItem.setVisible(!multiSelect && !isSearchMode);
+        if (diceItem != null) diceItem.setVisible(!hideAll);
         MenuItem moreItem = menu.findItem(R.id.action_more_main);
-        if (moreItem != null) moreItem.setVisible(!multiSelect && !isSearchMode);
+        if (moreItem != null) moreItem.setVisible(!hideAll);
         MenuItem searchItem = menu.findItem(R.id.action_search);
-        if (searchItem != null) searchItem.setVisible(!multiSelect && !isSearchMode);
+        if (searchItem != null) searchItem.setVisible(!hideAll);
         return super.onPrepareOptionsMenu(menu);
     }
 
@@ -583,9 +667,6 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
             return true;
         } else if (id == R.id.action_random_folder) {
             navigateToRandomFolder();
-            return true;
-        } else if (id == R.id.action_paste) {
-            doPaste();
             return true;
         } else if (id == R.id.action_more_main) {
             View anchor = findViewById(R.id.action_more_main);
@@ -601,16 +682,18 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
     private void showMainMoreMenu(View anchor) {
         PopupMenu popup = new PopupMenu(this, anchor);
         Menu m = popup.getMenu();
-        m.add(0, 0, 0, "全选");
-        m.add(0, 1, 0, "属性");
-        m.add(0, 2, 0, "视图切换");
-        m.add(0, 3, 0, "排序方式");
+        m.add(0, 0, 0, "新建文件夹");
+        m.add(0, 1, 0, "全选");
+        m.add(0, 2, 0, "属性");
+        m.add(0, 3, 0, "视图切换");
+        m.add(0, 4, 0, "排序方式");
         popup.setOnMenuItemClickListener(item -> {
             switch (item.getItemId()) {
-                case 0: doSelectAllFromMenu(); return true;
-                case 1: doFolderProperties();  return true;
-                case 2: showViewModeMenu(anchor); return true;
-                case 3: showSortMenu(anchor);    return true;
+                case 0: showNewFolderDialog();   return true;
+                case 1: doSelectAllFromMenu();   return true;
+                case 2: doFolderProperties();    return true;
+                case 3: showViewModeMenu(anchor); return true;
+                case 4: showSortMenu(anchor);    return true;
             }
             return false;
         });
@@ -1085,6 +1168,7 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
     protected void onResume() {
         super.onResume();
         applyBackground();
+        saveContentFrameDimensions();
         refreshNavShortcuts();
         if (!isSearchMode && !tabDirectories.isEmpty()) loadFiles(tabDirectories.get(activeTabIndex));
     }
@@ -1092,23 +1176,50 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
     private void applyBackground() {
         SharedPreferences prefs = getSharedPreferences("settings", MODE_PRIVATE);
         String bgPath = prefs.getString("background_image_path", null);
-        View mainContent = findViewById(R.id.mainContent);
-        if (bgPath != null && new File(bgPath).exists()) {
-            new Thread(() -> {
-                BitmapFactory.Options opts = new BitmapFactory.Options();
-                opts.inSampleSize = 2;
-                Bitmap bmp = BitmapFactory.decodeFile(bgPath, opts);
-                if (bmp != null) {
-                    int dim = prefs.getInt("background_dim", 40);
-                    Bitmap dimmed = bmp.copy(Bitmap.Config.ARGB_8888, true);
-                    new Canvas(dimmed).drawColor(Color.argb(dim * 255 / 100, 0, 0, 0));
-                    runOnUiThread(() -> mainContent.setBackground(
-                            new BitmapDrawable(getResources(), dimmed)));
-                }
-            }).start();
-        } else {
-            mainContent.setBackground(null);
+        View contentFrame = findViewById(R.id.contentFrame);
+        if (bgPath == null || !new File(bgPath).exists()) {
+            contentFrame.setBackground(null);
+            return;
         }
+        // Defer until the view is laid out so we have real dimensions
+        if (contentFrame.getWidth() == 0) {
+            contentFrame.post(this::applyBackground);
+            return;
+        }
+        final int w = contentFrame.getWidth();
+        final int h = contentFrame.getHeight();
+        final int opacity = prefs.getInt("background_opacity", 80);
+        new Thread(() -> {
+            BitmapFactory.Options opts = new BitmapFactory.Options();
+            opts.inSampleSize = 2;
+            Bitmap bmp = BitmapFactory.decodeFile(bgPath, opts);
+            if (bmp == null) return;
+            // Scale exactly to the content frame so there is no offset/crop
+            Bitmap scaled = Bitmap.createScaledBitmap(bmp, w, h, true);
+            if (scaled != bmp) bmp.recycle();
+            final Bitmap finalBmp = scaled;
+            runOnUiThread(() -> {
+                BitmapDrawable bd = new BitmapDrawable(getResources(), finalBmp);
+                bd.setAlpha(opacity * 255 / 100);   // 0% = 全透明，100% = 完全不透明
+                contentFrame.setBackground(bd);
+            });
+        }).start();
+    }
+
+    /** Save the content-frame pixel dimensions so CropActivity can use the correct ratio. */
+    private void saveContentFrameDimensions() {
+        View contentFrame = findViewById(R.id.contentFrame);
+        if (contentFrame == null) return;
+        contentFrame.post(() -> {
+            int w = contentFrame.getWidth();
+            int h = contentFrame.getHeight();
+            if (w > 0 && h > 0) {
+                getSharedPreferences("settings", MODE_PRIVATE).edit()
+                        .putInt("content_width", w)
+                        .putInt("content_height", h)
+                        .apply();
+            }
+        });
     }
 
     @Override
@@ -1119,6 +1230,10 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
         }
         if (adapter != null && adapter.isMultiSelectMode()) {
             adapter.exitMultiSelectMode();
+            return;
+        }
+        if (isClipboardMode) {
+            exitClipboardMode();
             return;
         }
         if (isSearchMode) {

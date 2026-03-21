@@ -14,7 +14,7 @@ import androidx.appcompat.widget.Toolbar;
 
 import java.io.File;
 
-public class JJVideoPlayerActivity extends AppCompatActivity {
+public class VideoPlayerActivity extends AppCompatActivity {
 
     private VideoView videoView;
     private ProgressBar progressBar;

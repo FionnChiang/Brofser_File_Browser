@@ -100,6 +100,7 @@
 
         <!-- 文件列表区域 -->
         <FrameLayout
+            android:id="@+id/contentFrame"
             android:layout_width="match_parent"
             android:layout_height="0dp"
             android:layout_weight="1">
@@ -152,6 +153,104 @@
                 android:textSize="13sp"
                 style="?attr/borderlessButtonStyle"
                 android:textColor="@color/colorPrimary" />
+
+        </LinearLayout>
+
+        <!-- 剪贴板模式：底部专用栏 -->
+        <LinearLayout
+            android:id="@+id/clipboardActionBar"
+            android:layout_width="match_parent"
+            android:layout_height="64dp"
+            android:background="#FFFFFF"
+            android:elevation="8dp"
+            android:orientation="horizontal"
+            android:visibility="gone">
+
+            <!-- 粘贴到此处（左侧大块） -->
+            <LinearLayout
+                android:id="@+id/actionClipboardPaste"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="3"
+                android:orientation="vertical"
+                android:gravity="center"
+                android:background="@color/colorPrimary"
+                android:padding="4dp">
+                <ImageView
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:src="@drawable/ic_paste"
+                    android:contentDescription="粘贴"
+                    android:tint="#FFFFFF" />
+                <TextView
+                    android:id="@+id/tvClipboardPasteLabel"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="粘贴到此处"
+                    android:textSize="12sp"
+                    android:textColor="#FFFFFF"
+                    android:layout_marginTop="2dp" />
+            </LinearLayout>
+
+            <!-- 分隔线 -->
+            <View
+                android:layout_width="1dp"
+                android:layout_height="match_parent"
+                android:background="#E0E0E0" />
+
+            <!-- 新建文件夹 -->
+            <LinearLayout
+                android:id="@+id/actionClipboardNewFolder"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:orientation="vertical"
+                android:gravity="center"
+                android:background="?attr/selectableItemBackground"
+                android:padding="4dp">
+                <ImageView
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:src="@drawable/ic_folder_add"
+                    android:contentDescription="新建文件夹" />
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="新建文件夹"
+                    android:textSize="10sp"
+                    android:textColor="#424242"
+                    android:layout_marginTop="2dp" />
+            </LinearLayout>
+
+            <!-- 分隔线 -->
+            <View
+                android:layout_width="1dp"
+                android:layout_height="match_parent"
+                android:background="#E0E0E0" />
+
+            <!-- 查看剪贴板 -->
+            <LinearLayout
+                android:id="@+id/actionClipboardView"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:orientation="vertical"
+                android:gravity="center"
+                android:background="?attr/selectableItemBackground"
+                android:padding="4dp">
+                <ImageView
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:src="@drawable/ic_clipboard_list"
+                    android:contentDescription="查看文件" />
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="查看文件"
+                    android:textSize="10sp"
+                    android:textColor="#424242"
+                    android:layout_marginTop="2dp" />
+            </LinearLayout>
 
         </LinearLayout>
 

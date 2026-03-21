@@ -20,6 +20,8 @@ import java.io.InputStream;
 public class CropActivity extends AppCompatActivity {
 
     public static final String EXTRA_URI        = "image_uri";
+    public static final String EXTRA_ASPECT_W   = "aspect_w";
+    public static final String EXTRA_ASPECT_H   = "aspect_h";
     public static final String RESULT_PATH      = "cropped_path";
 
     private CropImageView cropImageView;
@@ -43,6 +45,12 @@ public class CropActivity extends AppCompatActivity {
 
         btnCancel.setOnClickListener(v -> finish());
         btnConfirm.setOnClickListener(v -> confirmCrop());
+
+        float aspectW = getIntent().getFloatExtra(EXTRA_ASPECT_W, 0f);
+        float aspectH = getIntent().getFloatExtra(EXTRA_ASPECT_H, 0f);
+        if (aspectW > 0 && aspectH > 0) {
+            cropImageView.setAspectRatio(aspectW, aspectH);
+        }
 
         String uriStr = getIntent().getStringExtra(EXTRA_URI);
         if (uriStr == null) { finish(); return; }

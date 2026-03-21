@@ -28,6 +28,7 @@
 
         <activity
             android:name=".MainActivity"
+            android:screenOrientation="fullUser"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -36,14 +37,18 @@
         </activity>
 
         <activity android:name=".ImageViewerActivity"
-            android:screenOrientation="fullSensor" />
+            android:screenOrientation="fullUser" />
         <activity android:name=".VideoPlayerActivity"
-            android:screenOrientation="fullSensor"
+            android:screenOrientation="fullUser"
             android:configChanges="orientation|screenSize" />
-        <activity android:name=".AudioPlayerActivity" />
-        <activity android:name=".TextViewerActivity" />
-        <activity android:name=".SettingsActivity" />
-        <activity android:name=".CropActivity" />
+        <activity android:name=".AudioPlayerActivity"
+            android:screenOrientation="fullUser" />
+        <activity android:name=".TextViewerActivity"
+            android:screenOrientation="fullUser" />
+        <activity android:name=".SettingsActivity"
+            android:screenOrientation="fullUser" />
+        <activity android:name=".CropActivity"
+            android:screenOrientation="fullUser" />
 
         <provider
             android:name="androidx.core.content.FileProvider"
