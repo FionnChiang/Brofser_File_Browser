@@ -29,6 +29,7 @@ import android.view.MenuItem;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.inputmethod.InputMethodManager;
+import android.app.ProgressDialog;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
@@ -492,24 +493,267 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
         View anchor = findViewById(R.id.actionMore);
         PopupMenu popup = new PopupMenu(this, anchor);
         Menu m = popup.getMenu();
+        boolean hasArchive = items.size() == 1 && isArchiveFile(items.get(0).getFile().getName());
         m.add(0, 0, 0, "重命名");
         m.add(0, 1, 0, "压缩为 ZIP");
-        m.add(0, 2, 0, "隐藏");
-        m.add(0, 3, 0, "转移（剪切）");
-        m.add(0, 4, 0, "创建快捷方式");
-        m.add(0, 5, 0, "属性");
+        if (hasArchive) m.add(0, 2, 0, "解压");
+        m.add(0, 3, 0, "隐藏");
+        m.add(0, 4, 0, "转移（剪切）");
+        m.add(0, 5, 0, "创建快捷方式");
+        m.add(0, 6, 0, "属性");
         popup.setOnMenuItemClickListener(item -> {
             switch (item.getItemId()) {
-                case 0: doRename(items);        return true;
-                case 1: doCompress(items);      return true;
-                case 2: doHide(items);          return true;
-                case 3: doCut(items);           return true;
-                case 4: doCreateShortcut(items); return true;
-                case 5: doProperties(items);    return true;
+                case 0: doRename(items);         return true;
+                case 1: doCompress(items);       return true;
+                case 2: doExtract(items.get(0)); return true;
+                case 3: doHide(items);           return true;
+                case 4: doCut(items);            return true;
+                case 5: doCreateShortcut(items); return true;
+                case 6: doProperties(items);     return true;
             }
             return false;
         });
         popup.show();
+    }
+
+    // ─── 解压 ───────────────────────────────────────────────────────────────
+
+    private static final String[] ARCHIVE_EXTS = {
+        ".zip", ".jar", ".apk",
+        ".7z",
+        ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz",
+        ".gz", ".bz2", ".xz",
+        ".rar"
+    };
+
+    private boolean isArchiveFile(String name) {
+        String lower = name.toLowerCase(Locale.getDefault());
+        for (String ext : ARCHIVE_EXTS) {
+            if (lower.endsWith(ext)) return true;
+        }
+        return false;
+    }
+
+    private void doExtract(FileItem item) {
+        File archive = item.getFile();
+        File destDir  = buildExtractDestDir(archive);
+        new AlertDialog.Builder(this)
+                .setTitle("解压")
+                .setMessage("将解压到：\n" + destDir.getAbsolutePath())
+                .setPositiveButton("解压", (d, w) -> {
+                    ProgressDialog prog = new ProgressDialog(this);
+                    prog.setMessage("正在解压...");
+                    prog.setCancelable(false);
+                    prog.show();
+                    new Thread(() -> {
+                        String err = null;
+                        try {
+                            destDir.mkdirs();
+                            extractArchive(archive, destDir);
+                        } catch (Exception e) {
+                            err = e.getMessage();
+                            try { deleteRecursive(destDir); } catch (Exception ignored) {}
+                        }
+                        final String finalErr = err;
+                        runOnUiThread(() -> {
+                            prog.dismiss();
+                            if (finalErr == null) {
+                                loadFiles(tabDirectories.get(activeTabIndex));
+                                adapter.exitMultiSelectMode();
+                                toast("解压完成：" + destDir.getName());
+                            } else {
+                                toast("解压失败：" + finalErr);
+                            }
+                        });
+                    }).start();
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    /** 根据归档文件名构建目标文件夹（去掉扩展名，若已存在则追加编号）*/
+    private File buildExtractDestDir(File archive) {
+        String name = archive.getName();
+        String lower = name.toLowerCase(Locale.getDefault());
+        // 先尝试多段扩展名
+        String base = name;
+        for (String ext : new String[]{".tar.gz", ".tar.bz2", ".tar.xz", ".tgz", ".tbz2", ".txz"}) {
+            if (lower.endsWith(ext)) { base = name.substring(0, name.length() - ext.length()); break; }
+        }
+        if (base.equals(name)) {
+            int dot = name.lastIndexOf('.');
+            if (dot > 0) base = name.substring(0, dot);
+        }
+        File dir = new File(archive.getParentFile(), base);
+        int i = 1;
+        while (dir.exists()) { dir = new File(archive.getParentFile(), base + "(" + i++ + ")"); }
+        return dir;
+    }
+
+    /** 统一入口：按扩展名分发到对应解压方法 */
+    private void extractArchive(File archive, File destDir) throws Exception {
+        String lower = archive.getName().toLowerCase(Locale.getDefault());
+        if (lower.endsWith(".zip") || lower.endsWith(".jar") || lower.endsWith(".apk")) {
+            extractZip(archive, destDir);
+        } else if (lower.endsWith(".7z")) {
+            extract7z(archive, destDir);
+        } else if (lower.endsWith(".tar.gz") || lower.endsWith(".tgz")) {
+            extractTarCompressed(archive, destDir, "gz");
+        } else if (lower.endsWith(".tar.bz2") || lower.endsWith(".tbz2")) {
+            extractTarCompressed(archive, destDir, "bzip2");
+        } else if (lower.endsWith(".tar.xz") || lower.endsWith(".txz")) {
+            extractTarCompressed(archive, destDir, "xz");
+        } else if (lower.endsWith(".tar")) {
+            extractTarCompressed(archive, destDir, null);
+        } else if (lower.endsWith(".gz")) {
+            extractSingleGz(archive, destDir);
+        } else if (lower.endsWith(".bz2")) {
+            extractSingleBz2(archive, destDir);
+        } else if (lower.endsWith(".xz")) {
+            extractSingleXz(archive, destDir);
+        } else if (lower.endsWith(".rar")) {
+            extractRar(archive, destDir);
+        } else {
+            throw new Exception("不支持的格式");
+        }
+    }
+
+    private void extractZip(File archive, File destDir) throws Exception {
+        try (java.util.zip.ZipInputStream zis =
+                     new java.util.zip.ZipInputStream(new java.io.FileInputStream(archive))) {
+            java.util.zip.ZipEntry entry;
+            while ((entry = zis.getNextEntry()) != null) {
+                File out = new File(destDir, entry.getName());
+                if (!out.getCanonicalPath().startsWith(destDir.getCanonicalPath()))
+                    throw new SecurityException("非法路径：" + entry.getName());
+                if (entry.isDirectory()) { out.mkdirs(); }
+                else {
+                    out.getParentFile().mkdirs();
+                    try (java.io.FileOutputStream fos = new java.io.FileOutputStream(out)) {
+                        pipeStreams(zis, fos);
+                    }
+                }
+                zis.closeEntry();
+            }
+        }
+    }
+
+    private void extract7z(File archive, File destDir) throws Exception {
+        try (org.apache.commons.compress.archivers.sevenz.SevenZFile sz =
+                     new org.apache.commons.compress.archivers.sevenz.SevenZFile(archive)) {
+            org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry entry;
+            while ((entry = sz.getNextEntry()) != null) {
+                File out = new File(destDir, entry.getName());
+                if (!out.getCanonicalPath().startsWith(destDir.getCanonicalPath()))
+                    throw new SecurityException("非法路径：" + entry.getName());
+                if (entry.isDirectory()) { out.mkdirs(); }
+                else {
+                    out.getParentFile().mkdirs();
+                    try (java.io.FileOutputStream fos = new java.io.FileOutputStream(out)) {
+                        byte[] buf = new byte[8192];
+                        int n;
+                        while ((n = sz.read(buf)) != -1) fos.write(buf, 0, n);
+                    }
+                }
+            }
+        }
+    }
+
+    private void extractTarCompressed(File archive, File destDir, String compression) throws Exception {
+        java.io.InputStream raw = new java.io.FileInputStream(archive);
+        java.io.InputStream decompressed;
+        if (compression == null) {
+            decompressed = raw;
+        } else if (compression.equals("gz")) {
+            decompressed = new org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream(raw);
+        } else if (compression.equals("bzip2")) {
+            decompressed = new org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream(raw);
+        } else { // xz
+            decompressed = new org.apache.commons.compress.compressors.xz.XZCompressorInputStream(raw);
+        }
+        try (org.apache.commons.compress.archivers.tar.TarArchiveInputStream tis =
+                     new org.apache.commons.compress.archivers.tar.TarArchiveInputStream(decompressed)) {
+            org.apache.commons.compress.archivers.tar.TarArchiveEntry entry;
+            while ((entry = tis.getNextTarEntry()) != null) {
+                File out = new File(destDir, entry.getName());
+                if (!out.getCanonicalPath().startsWith(destDir.getCanonicalPath()))
+                    throw new SecurityException("非法路径：" + entry.getName());
+                if (entry.isDirectory()) { out.mkdirs(); }
+                else {
+                    out.getParentFile().mkdirs();
+                    try (java.io.FileOutputStream fos = new java.io.FileOutputStream(out)) {
+                        pipeStreams(tis, fos);
+                    }
+                }
+            }
+        } finally {
+            decompressed.close();
+            raw.close();
+        }
+    }
+
+    private void extractSingleGz(File archive, File destDir) throws Exception {
+        String outName = archive.getName().substring(0, archive.getName().length() - 3);
+        try (org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream gis =
+                     new org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream(
+                             new java.io.FileInputStream(archive));
+             java.io.FileOutputStream fos = new java.io.FileOutputStream(new File(destDir, outName))) {
+            pipeStreams(gis, fos);
+        }
+    }
+
+    private void extractSingleBz2(File archive, File destDir) throws Exception {
+        String outName = archive.getName().substring(0, archive.getName().length() - 4);
+        try (org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream bis =
+                     new org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream(
+                             new java.io.FileInputStream(archive));
+             java.io.FileOutputStream fos = new java.io.FileOutputStream(new File(destDir, outName))) {
+            pipeStreams(bis, fos);
+        }
+    }
+
+    private void extractSingleXz(File archive, File destDir) throws Exception {
+        String outName = archive.getName().substring(0, archive.getName().length() - 3);
+        try (org.apache.commons.compress.compressors.xz.XZCompressorInputStream xis =
+                     new org.apache.commons.compress.compressors.xz.XZCompressorInputStream(
+                             new java.io.FileInputStream(archive));
+             java.io.FileOutputStream fos = new java.io.FileOutputStream(new File(destDir, outName))) {
+            pipeStreams(xis, fos);
+        }
+    }
+
+    private void extractRar(File archive, File destDir) throws Exception {
+        try (org.apache.commons.compress.archivers.ArchiveInputStream ais =
+                     new org.apache.commons.compress.archivers.ArchiveStreamFactory()
+                             .createArchiveInputStream("rar", new java.io.FileInputStream(archive))) {
+            org.apache.commons.compress.archivers.ArchiveEntry entry;
+            while ((entry = ais.getNextEntry()) != null) {
+                File out = new File(destDir, entry.getName());
+                if (!out.getCanonicalPath().startsWith(destDir.getCanonicalPath()))
+                    throw new SecurityException("非法路径：" + entry.getName());
+                if (entry.isDirectory()) { out.mkdirs(); }
+                else {
+                    out.getParentFile().mkdirs();
+                    try (java.io.FileOutputStream fos = new java.io.FileOutputStream(out)) {
+                        pipeStreams(ais, fos);
+                    }
+                }
+            }
+        }
+    }
+
+    private static void pipeStreams(java.io.InputStream in, java.io.OutputStream out) throws java.io.IOException {
+        byte[] buf = new byte[8192];
+        int n;
+        while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
+    }
+
+    private static void deleteRecursive(File file) {
+        if (file.isDirectory()) {
+            File[] children = file.listFiles();
+            if (children != null) for (File c : children) deleteRecursive(c);
+        }
+        file.delete();
     }
 
     private void doRename(List<FileItem> items) {
@@ -1618,14 +1862,6 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
                 while ((len = in.read(buf)) > 0) out.write(buf, 0, len);
             }
         }
-    }
-
-    private void deleteRecursive(File file) {
-        if (file.isDirectory()) {
-            File[] children = file.listFiles();
-            if (children != null) for (File c : children) deleteRecursive(c);
-        }
-        file.delete();
     }
 
     private void addToZip(ZipOutputStream zos, File file, String entryName) throws IOException {

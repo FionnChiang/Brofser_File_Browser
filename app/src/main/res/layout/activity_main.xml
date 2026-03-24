@@ -373,7 +373,7 @@
                 <ImageView
                     android:layout_width="22dp"
                     android:layout_height="22dp"
-                    android:src="@drawable/ic_more_vert"
+                    android:src="@drawable/ic_more_vert_dark"
                     android:contentDescription="更多" />
                 <TextView
                     android:layout_width="wrap_content"
