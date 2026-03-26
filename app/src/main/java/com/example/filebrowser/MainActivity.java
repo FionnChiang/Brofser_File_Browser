@@ -77,8 +77,26 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Random;
 import java.util.Set;
+import android.widget.AdapterView;
+import android.widget.ArrayAdapter;
+import android.widget.ScrollView;
+import android.widget.Spinner;
+
+import java.util.zip.Deflater;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
+
+import org.apache.commons.compress.archivers.sevenz.SevenZMethod;
+import org.apache.commons.compress.archivers.sevenz.SevenZMethodConfiguration;
+import org.apache.commons.compress.archivers.sevenz.SevenZOutputFile;
+import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
+import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
+import org.apache.commons.compress.archivers.zip.ZipArchiveEntry;
+import org.apache.commons.compress.archivers.zip.ZipArchiveOutputStream;
+import org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream;
+import org.apache.commons.compress.compressors.gzip.GzipCompressorOutputStream;
+import org.apache.commons.compress.compressors.gzip.GzipParameters;
+import org.apache.commons.compress.compressors.xz.XZCompressorOutputStream;
 
 public class MainActivity extends AppCompatActivity implements FileAdapter.OnFileClickListener {
 
@@ -141,6 +159,32 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
     private String searchSortOrder = "name_asc";
     private boolean searchGlobal = false;
 
+    // 快速滚动条
+    private View fastScrollThumb;
+    private final Handler scrollHideHandler = new Handler(Looper.getMainLooper());
+    private Runnable scrollHideRunnable;
+
+    // 返回上级时记录要居中显示的子目录
+    private File pendingScrollToFile = null;
+
+    // 悬浮任务球
+    private View floatingBall;
+    private TextView floatingBallPercent;
+    private TextView floatingBallCount;
+    private TaskManager.Listener taskBallListener;
+
+    // 当前正在进行的操作任务（供压缩/解压子方法上报进度）
+    private volatile TaskManager.Task currentOperationTask;
+
+    // 顺序写操作队列——所有文件修改操作在此队列中串行执行，避免冲突
+    private final java.util.concurrent.ExecutorService writeExecutor =
+            java.util.concurrent.Executors.newSingleThreadExecutor();
+
+    /** 单文件进度回调（用于 copyFileOrDir 递归上报；fileSize 为该文件字节数） */
+    private interface OnFileProgress {
+        void on(String fileName, long fileSize);
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -168,6 +212,8 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
             int id = item.getItemId();
             if (id >= SHORTCUT_ID_BASE && id < SHORTCUT_ID_BASE + shortcutPaths.size()) {
                 loadFiles(new File(shortcutPaths.get(id - SHORTCUT_ID_BASE)));
+            } else if (id == R.id.nav_recycle_bin) {
+                startActivity(new Intent(this, RecycleBinActivity.class));
             } else if (id == R.id.nav_settings) {
                 startActivity(new Intent(this, SettingsActivity.class));
             } else if (id == R.id.nav_storage) {
@@ -194,6 +240,10 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
         bottomActionBar = findViewById(R.id.bottomActionBar);
         clipboardActionBar = findViewById(R.id.clipboardActionBar);
         tvSelectionCount = findViewById(R.id.tvSelectionCount);
+        fastScrollThumb = findViewById(R.id.fastScrollThumb);
+        floatingBall = findViewById(R.id.floatingBall);
+        floatingBallPercent = findViewById(R.id.floatingBallPercent);
+        floatingBallCount = findViewById(R.id.floatingBallCount);
 
         adapter = new FileAdapter(this, this);
         recyclerView.setLayoutManager(new LinearLayoutManager(this));
@@ -201,6 +251,10 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
         recyclerView.addItemDecoration(dividerDecoration);
         dividerAdded = true;
         recyclerView.setAdapter(adapter);
+        setupFastScroll();
+        setupFloatingBall();
+        // 清理超过 7 天的回收站文件
+        new Thread(() -> RecycleBin.cleanExpired(this)).start();
 
         // 搜索栏
         searchBarRow = findViewById(R.id.searchBarRow);
@@ -422,43 +476,112 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
         List<File> sources = new ArrayList<>(FileClipboard.files);
         int mode = FileClipboard.mode;
         FileClipboard.clear();
+        exitClipboardMode();
 
-        new Thread(() -> {
+        String verb = mode == FileClipboard.CUT ? "移动" : "复制";
+        TaskManager.Task task = TaskManager.get().addTask(verb + " " + sources.size() + " 个文件");
+
+        // 记录已成功复制的目标文件，供取消时回滚
+        List<File> createdDests = java.util.Collections.synchronizedList(new ArrayList<>());
+        task.setCancelAction(() -> writeExecutor.submit(() -> {
+            for (File f : new ArrayList<>(createdDests)) deleteRecursive(f);
+            runOnUiThread(() -> { loadFiles(destDir); toast("操作已取消，已复原文件"); });
+        }));
+
+        long totalBytes = 0;
+        for (File src : sources) totalBytes += totalSizeRecursive(src);
+        final long tb = Math.max(totalBytes, 1);
+        java.util.concurrent.atomic.AtomicLong doneBytes = new java.util.concurrent.atomic.AtomicLong(0);
+        writeExecutor.submit(() -> {
+            task.start("准备" + verb + "…");
             int success = 0, fail = 0;
-            for (File src : sources) {
+            for (int i = 0; i < sources.size(); i++) {
+                if (task.cancelled) break;
+                File src = sources.get(i);
                 if (!src.exists()) continue;
                 File dest = new File(destDir, src.getName());
-                // Avoid overwriting itself (cut to same dir)
                 if (dest.getAbsolutePath().equals(src.getAbsolutePath())) continue;
                 try {
-                    copyFileOrDir(src, dest);
-                    if (mode == FileClipboard.CUT) deleteRecursive(src);
+                    copyFileOrDir(src, dest, (name, size) -> {
+                        if (task.cancelled) throw new RuntimeException("cancelled");
+                        task.update("正在" + verb + "：" + name);
+                        task.setProgress((int)(doneBytes.addAndGet(size) * 100 / tb));
+                    });
+                    createdDests.add(dest);
+                    if (mode == FileClipboard.CUT && !task.cancelled) deleteRecursive(src);
                     success++;
                 } catch (IOException e) {
-                    fail++;
+                    if (!task.cancelled) fail++;
+                } catch (RuntimeException e) {
+                    break; // 被取消
                 }
             }
-            int finalSuccess = success, finalFail = fail;
-            String verb = mode == FileClipboard.CUT ? "移动" : "复制";
+            if (task.cancelled) return;
+            task.finish();
+            int fs = success, ff = fail;
             runOnUiThread(() -> {
                 loadFiles(destDir);
-                String msg = finalSuccess + " 项已" + verb;
-                if (finalFail > 0) msg += "，" + finalFail + " 项失败";
+                String msg = fs + " 项已" + verb;
+                if (ff > 0) msg += "，" + ff + " 项失败";
                 toast(msg);
             });
-        }).start();
+        });
     }
 
     private void doDelete(List<FileItem> items) {
         int count = items.size();
+
+        // 自定义视图：提示文字 + 回收站复选框
+        float d0 = getResources().getDisplayMetrics().density;
+        int pad = (int)(16 * d0);
+        LinearLayout view = new LinearLayout(this);
+        view.setOrientation(LinearLayout.VERTICAL);
+        view.setPadding(pad, pad / 2, pad, 0);
+
+        TextView tvMsg = new TextView(this);
+        tvMsg.setText("将删除选中的 " + count + " 项。");
+        tvMsg.setTextSize(15);
+        tvMsg.setTextColor(0xFF212121);
+        view.addView(tvMsg);
+
+        CheckBox cbTrash = new CheckBox(this);
+        cbTrash.setText("移入回收站（7 天后自动删除）");
+        cbTrash.setChecked(true);
+        cbTrash.setPadding(0, (int)(12 * d0), 0, 0);
+        view.addView(cbTrash);
+
         new AlertDialog.Builder(this)
                 .setTitle("确认删除")
-                .setMessage("将永久删除选中的 " + count + " 项，此操作不可恢复。")
-                .setPositiveButton("删除", (d, w) -> {
-                    for (FileItem item : items) deleteRecursive(item.getFile());
+                .setView(view)
+                .setPositiveButton("删除", (dlg, w) -> {
+                    boolean toTrash = cbTrash.isChecked();
                     adapter.exitMultiSelectMode();
-                    loadFiles(tabDirectories.get(activeTabIndex));
-                    toast(count + " 项已删除");
+                    File currentDir = tabDirectories.get(activeTabIndex);
+                    String taskTitle = (toTrash ? "移入回收站 " : "删除 ") + count + " 个文件";
+                    TaskManager.Task task = TaskManager.get().addTask(taskTitle);
+                    writeExecutor.submit(() -> {
+                        task.start("准备…");
+                        int done = 0;
+                        for (FileItem item : items) {
+                            if (task.cancelled) break;
+                            task.update((toTrash ? "移入回收站：" : "正在删除：") + item.getName());
+                            try {
+                                if (toTrash) RecycleBin.moveToTrash(item.getFile(), this);
+                                else         deleteRecursive(item.getFile());
+                            } catch (Exception ignored) {}
+                            done++;
+                            task.setProgress(done * 100 / count);
+                        }
+                        final int finalDone = done;
+                        final boolean ft = toTrash;
+                        task.finish();
+                        runOnUiThread(() -> {
+                            loadFiles(currentDir);
+                            String msg = finalDone + " 项已" + (ft ? "移入回收站" : "删除");
+                            if (finalDone < count) msg += "，已停止";
+                            toast(msg);
+                        });
+                    });
                 })
                 .setNegativeButton("取消", null)
                 .show();
@@ -536,36 +659,82 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
 
     private void doExtract(FileItem item) {
         File archive = item.getFile();
-        File destDir  = buildExtractDestDir(archive);
+        File defaultDest = buildExtractDestDir(archive);
+        int dp = (int)(getResources().getDisplayMetrics().density * 16);
+        int dp8 = dp / 2;
+
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp, dp8, dp, dp8);
+
+        // 解压目标路径（只读展示）
+        root.addView(makeDialogLabel("解压到"));
+        TextView tvDest = new TextView(this);
+        tvDest.setText(defaultDest.getAbsolutePath());
+        tvDest.setTextSize(13);
+        tvDest.setTextColor(0xFF424242);
+        int dp12 = (int)(getResources().getDisplayMetrics().density * 12);
+        tvDest.setPadding(0, 4, 0, dp12);
+        root.addView(tvDest);
+
+        // 密码（仅 7Z 支持）
+        root.addView(makeDialogLabel("密码（可选，留空视为无密码）"));
+        EditText etPwd = new EditText(this);
+        etPwd.setHint("留空不加密");
+        etPwd.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        root.addView(etPwd);
+
+        // 解压后删除原压缩包
+        CheckBox cbDelete = new CheckBox(this);
+        cbDelete.setText("解压后删除原压缩包");
+        cbDelete.setPadding(0, dp12, 0, 0);
+        root.addView(cbDelete);
+
+        ScrollView sv = new ScrollView(this);
+        sv.addView(root);
+
         new AlertDialog.Builder(this)
-                .setTitle("解压")
-                .setMessage("将解压到：\n" + destDir.getAbsolutePath())
-                .setPositiveButton("解压", (d, w) -> {
-                    ProgressDialog prog = new ProgressDialog(this);
-                    prog.setMessage("正在解压...");
-                    prog.setCancelable(false);
-                    prog.show();
-                    new Thread(() -> {
+                .setTitle("解压设置")
+                .setView(sv)
+                .setPositiveButton("开始解压", (d, w) -> {
+                    String pwd = etPwd.getText().toString();
+                    boolean deleteAfter = cbDelete.isChecked();
+
+                    adapter.exitMultiSelectMode();
+                    TaskManager.Task extTask = TaskManager.get().addTask("解压 " + archive.getName());
+                    final File finalDest = defaultDest;
+                    extTask.setCancelAction(() -> new Thread(() -> {
+                        deleteRecursive(finalDest);
+                        runOnUiThread(() -> toast("解压已取消，文件已清理"));
+                    }).start());
+
+                    writeExecutor.submit(() -> {
+                        currentOperationTask = extTask;
+                        extTask.start("准备解压…");
                         String err = null;
                         try {
-                            destDir.mkdirs();
-                            extractArchive(archive, destDir);
+                            if (!extTask.cancelled) {
+                                finalDest.mkdirs();
+                                extractArchiveWithPwd(archive, finalDest, pwd);
+                            }
+                            if (!extTask.cancelled && deleteAfter) deleteRecursive(archive);
                         } catch (Exception e) {
-                            err = e.getMessage();
-                            try { deleteRecursive(destDir); } catch (Exception ignored) {}
+                            if (!extTask.cancelled) err = e.getMessage();
+                        } finally {
+                            currentOperationTask = null;
                         }
+                        if (extTask.cancelled) return;
+                        extTask.finish();
                         final String finalErr = err;
                         runOnUiThread(() -> {
-                            prog.dismiss();
                             if (finalErr == null) {
                                 loadFiles(tabDirectories.get(activeTabIndex));
-                                adapter.exitMultiSelectMode();
-                                toast("解压完成：" + destDir.getName());
+                                toast("解压完成：" + finalDest.getName());
                             } else {
                                 toast("解压失败：" + finalErr);
                             }
                         });
-                    }).start();
+                    });
                 })
                 .setNegativeButton("取消", null)
                 .show();
@@ -619,10 +788,24 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
     }
 
     private void extractZip(File archive, File destDir) throws Exception {
+        // 预扫描总解压大小
+        long totalBytes = 0;
+        try (java.util.zip.ZipFile zf = new java.util.zip.ZipFile(archive)) {
+            java.util.Enumeration<? extends java.util.zip.ZipEntry> en = zf.entries();
+            while (en.hasMoreElements()) {
+                java.util.zip.ZipEntry e = en.nextElement();
+                if (!e.isDirectory()) totalBytes += Math.max(e.getSize(), 0);
+            }
+        }
+        final long tb = Math.max(totalBytes, 1);
+        long[] doneBytes = {0};
         try (java.util.zip.ZipInputStream zis =
                      new java.util.zip.ZipInputStream(new java.io.FileInputStream(archive))) {
             java.util.zip.ZipEntry entry;
             while ((entry = zis.getNextEntry()) != null) {
+                if (currentOperationTask != null && currentOperationTask.cancelled) break;
+                if (currentOperationTask != null)
+                    currentOperationTask.update("正在解压：" + entry.getName());
                 File out = new File(destDir, entry.getName());
                 if (!out.getCanonicalPath().startsWith(destDir.getCanonicalPath()))
                     throw new SecurityException("非法路径：" + entry.getName());
@@ -632,6 +815,10 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
                     try (java.io.FileOutputStream fos = new java.io.FileOutputStream(out)) {
                         pipeStreams(zis, fos);
                     }
+                    long sz = entry.getSize() >= 0 ? entry.getSize() : out.length();
+                    doneBytes[0] += sz;
+                    if (currentOperationTask != null)
+                        currentOperationTask.setProgress((int)(doneBytes[0] * 100 / tb));
                 }
                 zis.closeEntry();
             }
@@ -641,8 +828,16 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
     private void extract7z(File archive, File destDir) throws Exception {
         try (org.apache.commons.compress.archivers.sevenz.SevenZFile sz =
                      new org.apache.commons.compress.archivers.sevenz.SevenZFile(archive)) {
+            long totalBytes = 0;
+            for (org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry e : sz.getEntries())
+                if (!e.isDirectory()) totalBytes += Math.max(e.getSize(), 0);
+            final long tb = Math.max(totalBytes, 1);
+            long[] doneBytes = {0};
             org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry entry;
             while ((entry = sz.getNextEntry()) != null) {
+                if (currentOperationTask != null && currentOperationTask.cancelled) break;
+                if (currentOperationTask != null)
+                    currentOperationTask.update("正在解压：" + entry.getName());
                 File out = new File(destDir, entry.getName());
                 if (!out.getCanonicalPath().startsWith(destDir.getCanonicalPath()))
                     throw new SecurityException("非法路径：" + entry.getName());
@@ -654,27 +849,46 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
                         int n;
                         while ((n = sz.read(buf)) != -1) fos.write(buf, 0, n);
                     }
+                    long sz2 = entry.getSize() >= 0 ? entry.getSize() : out.length();
+                    doneBytes[0] += sz2;
+                    if (currentOperationTask != null)
+                        currentOperationTask.setProgress((int)(doneBytes[0] * 100 / tb));
                 }
             }
         }
     }
 
-    private void extractTarCompressed(File archive, File destDir, String compression) throws Exception {
+    private java.io.InputStream openTarStream(File archive, String compression) throws Exception {
         java.io.InputStream raw = new java.io.FileInputStream(archive);
-        java.io.InputStream decompressed;
-        if (compression == null) {
-            decompressed = raw;
-        } else if (compression.equals("gz")) {
-            decompressed = new org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream(raw);
-        } else if (compression.equals("bzip2")) {
-            decompressed = new org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream(raw);
-        } else { // xz
-            decompressed = new org.apache.commons.compress.compressors.xz.XZCompressorInputStream(raw);
+        if (compression == null) return raw;
+        if (compression.equals("gz"))    return new org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream(raw);
+        if (compression.equals("bzip2")) return new org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream(raw);
+        return new org.apache.commons.compress.compressors.xz.XZCompressorInputStream(raw); // xz
+    }
+
+    private void extractTarCompressed(File archive, File destDir, String compression) throws Exception {
+        // 第一次：只读取条目头部，统计总解压大小（不写文件）
+        long totalBytes = 0;
+        try (java.io.InputStream s = openTarStream(archive, compression);
+             org.apache.commons.compress.archivers.tar.TarArchiveInputStream scan =
+                     new org.apache.commons.compress.archivers.tar.TarArchiveInputStream(s)) {
+            org.apache.commons.compress.archivers.tar.TarArchiveEntry e;
+            while ((e = scan.getNextTarEntry()) != null) {
+                if (!e.isDirectory()) totalBytes += Math.max(e.getSize(), 0);
+            }
         }
-        try (org.apache.commons.compress.archivers.tar.TarArchiveInputStream tis =
-                     new org.apache.commons.compress.archivers.tar.TarArchiveInputStream(decompressed)) {
+        final long tb = Math.max(totalBytes, 1);
+        long[] doneBytes = {0};
+
+        // 第二次：实际解压
+        try (java.io.InputStream s2 = openTarStream(archive, compression);
+             org.apache.commons.compress.archivers.tar.TarArchiveInputStream tis =
+                     new org.apache.commons.compress.archivers.tar.TarArchiveInputStream(s2)) {
             org.apache.commons.compress.archivers.tar.TarArchiveEntry entry;
             while ((entry = tis.getNextTarEntry()) != null) {
+                if (currentOperationTask != null && currentOperationTask.cancelled) break;
+                if (currentOperationTask != null)
+                    currentOperationTask.update("正在解压：" + entry.getName());
                 File out = new File(destDir, entry.getName());
                 if (!out.getCanonicalPath().startsWith(destDir.getCanonicalPath()))
                     throw new SecurityException("非法路径：" + entry.getName());
@@ -684,11 +898,12 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
                     try (java.io.FileOutputStream fos = new java.io.FileOutputStream(out)) {
                         pipeStreams(tis, fos);
                     }
+                    long sz = entry.getSize() >= 0 ? entry.getSize() : out.length();
+                    doneBytes[0] += sz;
+                    if (currentOperationTask != null)
+                        currentOperationTask.setProgress((int)(doneBytes[0] * 100 / tb));
                 }
             }
-        } finally {
-            decompressed.close();
-            raw.close();
         }
     }
 
@@ -723,11 +938,27 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
     }
 
     private void extractRar(File archive, File destDir) throws Exception {
+        // 第一次：统计总解压大小
+        long totalBytes = 0;
+        try (org.apache.commons.compress.archivers.ArchiveInputStream scan =
+                     new org.apache.commons.compress.archivers.ArchiveStreamFactory()
+                             .createArchiveInputStream("rar", new java.io.FileInputStream(archive))) {
+            org.apache.commons.compress.archivers.ArchiveEntry e;
+            while ((e = scan.getNextEntry()) != null)
+                if (!e.isDirectory()) totalBytes += Math.max(e.getSize(), 0);
+        }
+        final long tb = Math.max(totalBytes, 1);
+        long[] doneBytes = {0};
+
+        // 第二次：实际解压
         try (org.apache.commons.compress.archivers.ArchiveInputStream ais =
                      new org.apache.commons.compress.archivers.ArchiveStreamFactory()
                              .createArchiveInputStream("rar", new java.io.FileInputStream(archive))) {
             org.apache.commons.compress.archivers.ArchiveEntry entry;
             while ((entry = ais.getNextEntry()) != null) {
+                if (currentOperationTask != null && currentOperationTask.cancelled) break;
+                if (currentOperationTask != null)
+                    currentOperationTask.update("正在解压：" + entry.getName());
                 File out = new File(destDir, entry.getName());
                 if (!out.getCanonicalPath().startsWith(destDir.getCanonicalPath()))
                     throw new SecurityException("非法路径：" + entry.getName());
@@ -737,6 +968,10 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
                     try (java.io.FileOutputStream fos = new java.io.FileOutputStream(out)) {
                         pipeStreams(ais, fos);
                     }
+                    long sz = entry.getSize() >= 0 ? entry.getSize() : out.length();
+                    doneBytes[0] += sz;
+                    if (currentOperationTask != null)
+                        currentOperationTask.setProgress((int)(doneBytes[0] * 100 / tb));
                 }
             }
         }
@@ -755,6 +990,16 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
         }
         file.delete();
     }
+
+    private static long totalSizeRecursive(File f) {
+        if (f.isFile()) return f.length();
+        File[] ch = f.listFiles();
+        if (ch == null) return 0;
+        long n = 0;
+        for (File c : ch) n += totalSizeRecursive(c);
+        return n;
+    }
+
 
     private void doRename(List<FileItem> items) {
         if (items.size() != 1) { toast("一次只能重命名一个文件"); return; }
@@ -797,28 +1042,147 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
 
     private void doCompress(List<FileItem> items) {
         File currentDir = tabDirectories.get(activeTabIndex);
-        String baseName = items.size() == 1 ? items.get(0).getName() : "archive";
-        File zipFile = new File(currentDir, baseName + ".zip");
-        int counter = 1;
-        while (zipFile.exists()) {
-            zipFile = new File(currentDir, baseName + "_" + counter + ".zip");
-            counter++;
+        String rawBase = items.size() == 1 ? items.get(0).getName() : "archive";
+        // 去掉单文件的扩展名作为默认压缩包名
+        if (items.size() == 1 && !items.get(0).getFile().isDirectory()) {
+            int dot = rawBase.lastIndexOf('.');
+            if (dot > 0) rawBase = rawBase.substring(0, dot);
         }
-        final File finalZipFile = zipFile;
-        adapter.exitMultiSelectMode();
+        final String defaultBase = rawBase;
 
-        new Thread(() -> {
-            try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(finalZipFile))) {
-                for (FileItem item : items) addToZip(zos, item.getFile(), item.getName());
-                runOnUiThread(() -> {
-                    loadFiles(currentDir);
-                    toast("已压缩为 " + finalZipFile.getName());
-                });
-            } catch (IOException e) {
-                finalZipFile.delete();
-                runOnUiThread(() -> toast("压缩失败：" + e.getMessage()));
-            }
-        }).start();
+        int dp = (int)(getResources().getDisplayMetrics().density * 16);
+        int dp8 = dp / 2;
+
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp, dp8, dp, dp8);
+
+        // 压缩包名称
+        root.addView(makeDialogLabel("压缩包名称"));
+        EditText etName = new EditText(this);
+        etName.setText(defaultBase);
+        etName.setSingleLine(true);
+        etName.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        root.addView(etName);
+
+        // 格式
+        root.addView(makeDialogLabel("格式"));
+        final String[] fmtLabels = {"ZIP", "7Z", "TAR.GZ", "TAR.BZ2", "TAR.XZ", "TAR"};
+        final String[] fmtKeys   = {"zip","7z","tar.gz","tar.bz2","tar.xz","tar"};
+        final String[] fmtExts   = {".zip",".7z",".tar.gz",".tar.bz2",".tar.xz",".tar"};
+        Spinner spFormat = new Spinner(this);
+        spFormat.setAdapter(new ArrayAdapter<>(this,
+                android.R.layout.simple_spinner_dropdown_item, fmtLabels));
+        root.addView(spFormat);
+
+        // 压缩等级
+        root.addView(makeDialogLabel("压缩等级"));
+        final String[] levelLabels = {"存储（不压缩，最快）","最快","快速","普通","最佳（最慢）"};
+        Spinner spLevel = new Spinner(this);
+        spLevel.setAdapter(new ArrayAdapter<>(this,
+                android.R.layout.simple_spinner_dropdown_item, levelLabels));
+        spLevel.setSelection(3); // 默认"普通"
+        root.addView(spLevel);
+
+        // 密码保护（ZIP / 7Z 支持）
+        int dp12 = (int)(getResources().getDisplayMetrics().density * 12);
+        CheckBox cbPwd = new CheckBox(this);
+        cbPwd.setText("设置密码保护（ZIP / 7Z）");
+        cbPwd.setPadding(0, dp12, 0, 0);
+        root.addView(cbPwd);
+
+        TextView tvPwdLabel = makeDialogLabel("输入密码");
+        EditText etPwd = new EditText(this);
+        etPwd.setHint("请输入密码");
+        etPwd.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        TextView tvPwdConfirmLabel = makeDialogLabel("确认密码");
+        EditText etPwdConfirm = new EditText(this);
+        etPwdConfirm.setHint("再次输入密码");
+        etPwdConfirm.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        tvPwdLabel.setVisibility(View.GONE);
+        etPwd.setVisibility(View.GONE);
+        tvPwdConfirmLabel.setVisibility(View.GONE);
+        etPwdConfirm.setVisibility(View.GONE);
+        root.addView(tvPwdLabel);
+        root.addView(etPwd);
+        root.addView(tvPwdConfirmLabel);
+        root.addView(etPwdConfirm);
+
+        cbPwd.setOnCheckedChangeListener((btn, checked) -> {
+            int vis = checked ? View.VISIBLE : View.GONE;
+            tvPwdLabel.setVisibility(vis);
+            etPwd.setVisibility(vis);
+            tvPwdConfirmLabel.setVisibility(vis);
+            etPwdConfirm.setVisibility(vis);
+        });
+
+        // 输出目录提示
+        TextView tvOut = new TextView(this);
+        tvOut.setText("输出目录：" + currentDir.getAbsolutePath());
+        tvOut.setTextSize(12);
+        tvOut.setTextColor(0xFF757575);
+        tvOut.setPadding(0, dp12, 0, 0);
+        root.addView(tvOut);
+
+        ScrollView sv = new ScrollView(this);
+        sv.addView(root);
+
+        new AlertDialog.Builder(this)
+                .setTitle("压缩设置")
+                .setView(sv)
+                .setPositiveButton("开始压缩", (d, w) -> {
+                    String name = etName.getText().toString().trim();
+                    if (name.isEmpty()) name = defaultBase;
+                    int fmtPos = spFormat.getSelectedItemPosition();
+                    int lvlPos = spLevel.getSelectedItemPosition();
+                    String ext  = fmtExts[fmtPos];
+                    String fmt  = fmtKeys[fmtPos];
+
+                    // 密码校验
+                    if (cbPwd.isChecked()) {
+                        String p1 = etPwd.getText().toString();
+                        String p2 = etPwdConfirm.getText().toString();
+                        if (p1.isEmpty()) { toast("密码不能为空"); return; }
+                        if (!p1.equals(p2)) { toast("两次输入的密码不一致"); return; }
+                    }
+                    final String finalPwd = cbPwd.isChecked() ? etPwd.getText().toString() : "";
+
+                    File outFile = new File(currentDir, name + ext);
+                    int idx = 1;
+                    while (outFile.exists())
+                        outFile = new File(currentDir, name + "(" + idx++ + ")" + ext);
+                    final File finalOut = outFile;
+                    final String finalFmt = fmt;
+                    final int finalLvl = lvlPos;
+
+                    adapter.exitMultiSelectMode();
+                    TaskManager.Task compTask = TaskManager.get().addTask(
+                            "压缩 " + items.size() + " 个文件 → " + finalOut.getName());
+                    compTask.setCancelAction(() ->
+                            new Thread(finalOut::delete).start());
+
+                    writeExecutor.submit(() -> {
+                        currentOperationTask = compTask;
+                        compTask.start("准备压缩…");
+                        try {
+                            if (!compTask.cancelled) compressItems(items, finalOut, finalFmt, finalLvl);
+                            if (!compTask.cancelled) {
+                                compTask.finish();
+                                runOnUiThread(() -> { loadFiles(currentDir); toast("已压缩为 " + finalOut.getName()); });
+                            }
+                        } catch (Exception e) {
+                            finalOut.delete();
+                            if (!compTask.cancelled) {
+                                compTask.finish();
+                                runOnUiThread(() -> toast("压缩失败：" + e.getMessage()));
+                            }
+                        } finally {
+                            currentOperationTask = null;
+                        }
+                    });
+                })
+                .setNegativeButton("取消", null)
+                .show();
     }
 
     private void doHide(List<FileItem> items) {
@@ -1227,6 +1591,112 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
         });
     }
 
+    // ─── 悬浮任务球 ──────────────────────────────────────────────────────────
+
+    private void setupFloatingBall() {
+        taskBallListener = () -> updateFloatingBall();
+        TaskManager.get().addListener(taskBallListener);
+    }
+
+    private void updateFloatingBall() {
+        List<TaskManager.Task> tasks = TaskManager.get().getActiveTasks();
+        int count = tasks.size();
+        if (count == 0) {
+            floatingBall.setVisibility(View.GONE);
+            return;
+        }
+        floatingBall.setVisibility(View.VISIBLE);
+
+        // 显示第一个有百分比进度的任务，否则显示"…"
+        int pct = -1;
+        for (TaskManager.Task t : tasks) {
+            if (t.progress >= 0) { pct = t.progress; break; }
+        }
+        floatingBallPercent.setVisibility(View.VISIBLE);
+        floatingBallPercent.setText(pct >= 0 ? pct + "%" : "…");
+
+        // 多任务角标
+        if (count > 1) {
+            floatingBallCount.setVisibility(View.VISIBLE);
+            floatingBallCount.setText(String.valueOf(count));
+        } else {
+            floatingBallCount.setVisibility(View.GONE);
+        }
+
+    }
+
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        TaskManager.get().removeListener(taskBallListener);
+    }
+
+    // ─── 快速滚动条 ───────────────────────────────────────────────────────────
+
+    private void setupFastScroll() {
+        scrollHideRunnable = () -> fastScrollThumb.setVisibility(View.INVISIBLE);
+
+        recyclerView.addOnScrollListener(new RecyclerView.OnScrollListener() {
+            @Override
+            public void onScrolled(@NonNull RecyclerView rv, int dx, int dy) {
+                updateFastScrollThumbPosition();
+                scrollHideHandler.removeCallbacks(scrollHideRunnable);
+                scrollHideHandler.postDelayed(scrollHideRunnable, 1500);
+            }
+        });
+
+        fastScrollThumb.setOnTouchListener((v, event) -> {
+            switch (event.getAction()) {
+                case MotionEvent.ACTION_DOWN:
+                case MotionEvent.ACTION_MOVE: {
+                    scrollHideHandler.removeCallbacks(scrollHideRunnable);
+                    fastScrollThumb.setVisibility(View.VISIBLE);
+                    int[] loc = new int[2];
+                    recyclerView.getLocationOnScreen(loc);
+                    float relY = event.getRawY() - loc[1];
+                    float fraction = Math.max(0f, Math.min(1f, relY / recyclerView.getHeight()));
+                    int itemCount = adapter.getItemCount();
+                    if (itemCount > 0) {
+                        int target = (int) (fraction * (itemCount - 1));
+                        ((LinearLayoutManager) recyclerView.getLayoutManager())
+                                .scrollToPositionWithOffset(target, 0);
+                    }
+                    break;
+                }
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    scrollHideHandler.postDelayed(scrollHideRunnable, 1500);
+                    break;
+            }
+            return true;
+        });
+    }
+
+    private void updateFastScrollThumbPosition() {
+        RecyclerView.LayoutManager lm = recyclerView.getLayoutManager();
+        if (!(lm instanceof LinearLayoutManager)) return;
+        LinearLayoutManager llm = (LinearLayoutManager) lm;
+        int itemCount = adapter.getItemCount();
+        if (itemCount == 0) { fastScrollThumb.setVisibility(View.INVISIBLE); return; }
+
+        int first = llm.findFirstVisibleItemPosition();
+        int last  = llm.findLastVisibleItemPosition();
+        if (last - first + 1 >= itemCount) { fastScrollThumb.setVisibility(View.INVISIBLE); return; }
+
+        View firstView = llm.findViewByPosition(first);
+        float offset = (firstView != null && firstView.getHeight() > 0)
+                ? (float) (-firstView.getTop()) / firstView.getHeight() : 0f;
+        float scrollPos = first + offset;
+        float fraction = Math.max(0f, Math.min(1f,
+                scrollPos / (itemCount - (last - first + 1))));
+
+        int thumbH = fastScrollThumb.getHeight();
+        float thumbY = fraction * (recyclerView.getHeight() - thumbH);
+        fastScrollThumb.setTranslationY(thumbY);
+        fastScrollThumb.setVisibility(View.VISIBLE);
+    }
+
     // ─── 文件加载 ─────────────────────────────────────────────────────────────
 
     private void loadFiles(File directory) {
@@ -1297,6 +1767,30 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
         } else {
             tvEmpty.setVisibility(View.GONE);
             recyclerView.setVisibility(View.VISIBLE);
+        }
+
+        // 滚动定位
+        if (pendingScrollToFile != null) {
+            final File target = pendingScrollToFile;
+            final List<FileItem> snapshot = new ArrayList<>(fileItems);
+            pendingScrollToFile = null;
+            recyclerView.post(() -> {
+                int pos = -1;
+                for (int i = 0; i < snapshot.size(); i++) {
+                    File f = snapshot.get(i).getFile();
+                    if (f != null && f.getAbsolutePath().equals(target.getAbsolutePath())) {
+                        pos = i; break;
+                    }
+                }
+                if (pos < 0) return;
+                LinearLayoutManager llm = (LinearLayoutManager) recyclerView.getLayoutManager();
+                int rvH = recyclerView.getHeight();
+                int itemH = (int)(56 * getResources().getDisplayMetrics().density);
+                int offset = Math.max(0, rvH / 2 - itemH / 2);
+                llm.scrollToPositionWithOffset(pos, offset);
+            });
+        } else {
+            recyclerView.scrollToPosition(0);
         }
     }
 
@@ -1487,6 +1981,7 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
         File currentDir = tabDirectories.get(activeTabIndex);
         File rootDir = Environment.getExternalStorageDirectory();
         if (!currentDir.getAbsolutePath().equals(rootDir.getAbsolutePath())) {
+            pendingScrollToFile = currentDir;   // 返回后将该文件夹居中显示
             loadFiles(currentDir.getParentFile());
         } else {
             super.onBackPressed();
@@ -1848,22 +2343,232 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
     }
 
     private void copyFileOrDir(File src, File dst) throws IOException {
+        copyFileOrDir(src, dst, null);
+    }
+
+    private void copyFileOrDir(File src, File dst, OnFileProgress cb) throws IOException {
         if (src.isDirectory()) {
             dst.mkdirs();
             File[] children = src.listFiles();
             if (children != null) {
-                for (File child : children) copyFileOrDir(child, new File(dst, child.getName()));
+                for (File child : children) {
+                    copyFileOrDir(child, new File(dst, child.getName()), cb);
+                }
             }
         } else {
+            long size = src.length();
             try (FileInputStream in = new FileInputStream(src);
                  FileOutputStream out = new FileOutputStream(dst)) {
                 byte[] buf = new byte[8192];
                 int len;
                 while ((len = in.read(buf)) > 0) out.write(buf, 0, len);
             }
+            // 复制完成后回调，通知调用方累加字节数
+            if (cb != null) cb.on(src.getName(), size);
         }
     }
 
+    // ─── 压缩（多格式）────────────────────────────────────────────────────────
+
+    /** levelPos: 0=存储, 1=最快, 2=快速, 3=普通, 4=最佳 */
+    private void compressItems(List<FileItem> items, File outFile, String format, int levelPos) throws Exception {
+        switch (format) {
+            case "zip":     compressToZip(items, outFile, levelPos); break;
+            case "7z":      compressTo7z(items, outFile, levelPos);  break;
+            case "tar.gz":  compressToTar(items, outFile, "gz",    levelPos); break;
+            case "tar.bz2": compressToTar(items, outFile, "bzip2", levelPos); break;
+            case "tar.xz":  compressToTar(items, outFile, "xz",    levelPos); break;
+            case "tar":     compressToTar(items, outFile, null,    0);        break;
+            default: throw new Exception("不支持的格式：" + format);
+        }
+    }
+
+    private void compressToZip(List<FileItem> items, File outFile, int levelPos) throws IOException {
+        int[] zipLevels = {Deflater.NO_COMPRESSION, 1, 3, 6, Deflater.BEST_COMPRESSION};
+        try (ZipArchiveOutputStream zos = new ZipArchiveOutputStream(outFile)) {
+            if (levelPos == 0) {
+                zos.setMethod(ZipEntry.STORED);
+                zos.setLevel(Deflater.NO_COMPRESSION);
+            } else {
+                zos.setMethod(ZipEntry.DEFLATED);
+                zos.setLevel(zipLevels[levelPos]);
+            }
+            for (int i = 0; i < items.size(); i++) {
+                if (currentOperationTask != null && currentOperationTask.cancelled) break;
+                FileItem item = items.get(i);
+                if (currentOperationTask != null) {
+                    currentOperationTask.update("正在压缩：" + item.getName());
+                    currentOperationTask.setProgress((i + 1) * 100 / items.size());
+                }
+                addToZipArchive(zos, item.getFile(), item.getName());
+            }
+        }
+    }
+
+    private void addToZipArchive(ZipArchiveOutputStream zos, File file, String entryName) throws IOException {
+        ZipArchiveEntry entry = new ZipArchiveEntry(file, entryName);
+        zos.putArchiveEntry(entry);
+        if (!file.isDirectory()) {
+            try (FileInputStream fis = new FileInputStream(file)) {
+                byte[] buf = new byte[8192]; int n;
+                while ((n = fis.read(buf)) != -1) zos.write(buf, 0, n);
+            }
+        }
+        zos.closeArchiveEntry();
+        if (file.isDirectory()) {
+            File[] children = file.listFiles();
+            if (children != null)
+                for (File c : children) addToZipArchive(zos, c, entryName + "/" + c.getName());
+        }
+    }
+
+    private void compressTo7z(List<FileItem> items, File outFile, int levelPos) throws IOException {
+        try (SevenZOutputFile sz = new SevenZOutputFile(outFile)) {
+            SevenZMethod method = (levelPos == 0) ? SevenZMethod.COPY : SevenZMethod.LZMA2;
+            sz.setContentMethods(Collections.singletonList(new SevenZMethodConfiguration(method)));
+            for (int i = 0; i < items.size(); i++) {
+                if (currentOperationTask != null && currentOperationTask.cancelled) break;
+                FileItem item = items.get(i);
+                if (currentOperationTask != null) {
+                    currentOperationTask.update("正在压缩：" + item.getName());
+                    currentOperationTask.setProgress((i + 1) * 100 / items.size());
+                }
+                addTo7z(sz, item.getFile(), item.getName());
+            }
+        }
+    }
+
+    private void addTo7z(SevenZOutputFile sz, File file, String entryName) throws IOException {
+        org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry entry =
+                sz.createArchiveEntry(file, entryName);
+        sz.putArchiveEntry(entry);
+        if (!file.isDirectory()) {
+            try (FileInputStream fis = new FileInputStream(file)) {
+                byte[] buf = new byte[8192]; int n;
+                while ((n = fis.read(buf)) != -1) sz.write(buf, 0, n);
+            }
+        }
+        sz.closeArchiveEntry();
+        if (file.isDirectory()) {
+            File[] children = file.listFiles();
+            if (children != null)
+                for (File c : children) addTo7z(sz, c, entryName + "/" + c.getName());
+        }
+    }
+
+    private void compressToTar(List<FileItem> items, File outFile,
+                               String compression, int levelPos) throws IOException {
+        java.io.OutputStream raw = new FileOutputStream(outFile);
+        java.io.OutputStream compressed;
+        if (compression == null) {
+            compressed = raw;
+        } else if (compression.equals("gz")) {
+            GzipParameters gzp = new GzipParameters();
+            int[] gzLevels = {Deflater.NO_COMPRESSION, 1, 3, 6, Deflater.BEST_COMPRESSION};
+            gzp.setCompressionLevel(gzLevels[levelPos]);
+            compressed = new GzipCompressorOutputStream(raw, gzp);
+        } else if (compression.equals("bzip2")) {
+            compressed = new BZip2CompressorOutputStream(raw);
+        } else { // xz
+            compressed = new XZCompressorOutputStream(raw);
+        }
+        try (TarArchiveOutputStream tos = new TarArchiveOutputStream(compressed)) {
+            tos.setLongFileMode(TarArchiveOutputStream.LONGFILE_GNU);
+            for (int i = 0; i < items.size(); i++) {
+                if (currentOperationTask != null && currentOperationTask.cancelled) break;
+                FileItem item = items.get(i);
+                if (currentOperationTask != null) {
+                    currentOperationTask.update("正在压缩：" + item.getName());
+                    currentOperationTask.setProgress((i + 1) * 100 / items.size());
+                }
+                addToTarArchive(tos, item.getFile(), item.getName());
+            }
+        } finally {
+            compressed.close();
+            if (compressed != raw) raw.close();
+        }
+    }
+
+    private void addToTarArchive(TarArchiveOutputStream tos, File file, String entryName) throws IOException {
+        TarArchiveEntry entry = new TarArchiveEntry(file, entryName);
+        tos.putArchiveEntry(entry);
+        if (!file.isDirectory()) {
+            try (FileInputStream fis = new FileInputStream(file)) {
+                byte[] buf = new byte[8192]; int n;
+                while ((n = fis.read(buf)) != -1) tos.write(buf, 0, n);
+            }
+        }
+        tos.closeArchiveEntry();
+        if (file.isDirectory()) {
+            File[] children = file.listFiles();
+            if (children != null)
+                for (File c : children) addToTarArchive(tos, c, entryName + "/" + c.getName());
+        }
+    }
+
+    /** 带密码的解压入口（7Z 支持密码；ZIP 降级为无密码解压） */
+    private void extractArchiveWithPwd(File archive, File destDir, String password) throws Exception {
+        String lower = archive.getName().toLowerCase(Locale.getDefault());
+        if (lower.endsWith(".7z")) {
+            extract7zWithPwd(archive, destDir, password);
+        } else {
+            // 其他格式走原有逻辑
+            extractArchive(archive, destDir);
+        }
+    }
+
+    private void extract7zWithPwd(File archive, File destDir, String password) throws Exception {
+        org.apache.commons.compress.archivers.sevenz.SevenZFile sz;
+        if (password != null && !password.isEmpty()) {
+            sz = new org.apache.commons.compress.archivers.sevenz.SevenZFile(
+                    archive, password.toCharArray());
+        } else {
+            sz = new org.apache.commons.compress.archivers.sevenz.SevenZFile(archive);
+        }
+        try {
+            long totalBytes = 0;
+            for (org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry e : sz.getEntries())
+                if (!e.isDirectory()) totalBytes += Math.max(e.getSize(), 0);
+            final long tb = Math.max(totalBytes, 1);
+            long[] doneBytes = {0};
+            org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry entry;
+            while ((entry = sz.getNextEntry()) != null) {
+                if (currentOperationTask != null && currentOperationTask.cancelled) break;
+                if (currentOperationTask != null)
+                    currentOperationTask.update("正在解压：" + entry.getName());
+                File out = new File(destDir, entry.getName());
+                if (!out.getCanonicalPath().startsWith(destDir.getCanonicalPath()))
+                    throw new SecurityException("非法路径：" + entry.getName());
+                if (entry.isDirectory()) { out.mkdirs(); }
+                else {
+                    out.getParentFile().mkdirs();
+                    try (FileOutputStream fos = new FileOutputStream(out)) {
+                        byte[] buf = new byte[8192]; int n;
+                        while ((n = sz.read(buf)) != -1) fos.write(buf, 0, n);
+                    }
+                    long sz2 = entry.getSize() >= 0 ? entry.getSize() : out.length();
+                    doneBytes[0] += sz2;
+                    if (currentOperationTask != null)
+                        currentOperationTask.setProgress((int)(doneBytes[0] * 100 / tb));
+                }
+            }
+        } finally {
+            sz.close();
+        }
+    }
+
+    /** 对话框标签辅助方法 */
+    private TextView makeDialogLabel(String text) {
+        TextView tv = new TextView(this);
+        tv.setText(text);
+        tv.setTextSize(14);
+        tv.setTextColor(0xFF212121);
+        int pad = (int)(getResources().getDisplayMetrics().density * 12);
+        tv.setPadding(0, pad, 0, 4);
+        return tv;
+    }
+
+    // ─── 原始 ZIP 压缩（保留，供内部兼容使用）──────────────────────────────
     private void addToZip(ZipOutputStream zos, File file, String entryName) throws IOException {
         if (file.isDirectory()) {
             zos.putNextEntry(new ZipEntry(entryName + "/"));

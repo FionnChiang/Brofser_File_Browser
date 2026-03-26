@@ -49,6 +49,9 @@
             android:screenOrientation="fullUser" />
         <activity android:name=".CropActivity"
             android:screenOrientation="fullUser" />
+        <activity android:name=".RecycleBinActivity"
+            android:screenOrientation="fullUser"
+            android:label="回收站" />
 
         <provider
             android:name="androidx.core.content.FileProvider"

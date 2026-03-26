@@ -30,6 +30,7 @@
 
     <item android:title="更多">
         <menu>
+            <item android:id="@+id/nav_recycle_bin" android:title="回收站" android:icon="@drawable/ic_delete" />
             <item android:id="@+id/nav_settings" android:title="设置" />
         </menu>
     </item>
