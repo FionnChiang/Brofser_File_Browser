@@ -42,6 +42,10 @@ public class FileAdapter extends RecyclerView.Adapter<FileAdapter.FileViewHolder
         void onEnterMultiSelect();
         void onSelectionChanged(int selectedCount, int totalCount);
         void onExitMultiSelect();
+        /** 返回 false 时，长按/进入多选动作将被拦截 */
+        default boolean canEnterMultiSelect() { return true; }
+        /** 被拦截时的回调，用于提示用户 */
+        default void onMultiSelectBlocked() {}
     }
 
     private final Context context;
@@ -112,6 +116,10 @@ public class FileAdapter extends RecyclerView.Adapter<FileAdapter.FileViewHolder
     }
 
     public void enterMultiSelectMode(int position) {
+        if (multiSelectListener != null && !multiSelectListener.canEnterMultiSelect()) {
+            multiSelectListener.onMultiSelectBlocked();
+            return;
+        }
         multiSelectMode = true;
         selectedPositions.clear();
         selectedPositions.add(position);
@@ -123,6 +131,10 @@ public class FileAdapter extends RecyclerView.Adapter<FileAdapter.FileViewHolder
     }
 
     public void enterMultiSelectModeEmpty() {
+        if (multiSelectListener != null && !multiSelectListener.canEnterMultiSelect()) {
+            multiSelectListener.onMultiSelectBlocked();
+            return;
+        }
         multiSelectMode = true;
         selectedPositions.clear();
         notifyDataSetChanged();

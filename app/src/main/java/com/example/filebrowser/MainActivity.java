@@ -281,6 +281,14 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
 
     private void setupMultiSelect() {
         adapter.setMultiSelectListener(new FileAdapter.OnMultiSelectListener() {
+
+            @Override
+            public boolean canEnterMultiSelect() {
+                // 剪贴板有内容时禁止进入编辑模式
+                return !FileClipboard.hasContent();
+            }
+
+
             @Override
             public void onEnterMultiSelect() {
                 selectionBar.setVisibility(View.VISIBLE);

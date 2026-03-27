@@ -33,10 +33,9 @@ public class RecycleBinActivity extends AppCompatActivity {
         toolbar.setTitle("回收站");
         toolbar.setBackgroundColor(getResources().getColor(R.color.colorPrimary));
         toolbar.setTitleTextColor(0xFFFFFFFF);
-        toolbar.setNavigationIcon(android.R.drawable.ic_menu_revert);
+        toolbar.setNavigationIcon(R.drawable.ic_arrow_back);
         toolbar.setNavigationOnClickListener(v -> finish());
         // "清空"菜单项
-        toolbar.inflateMenu(0); // no xml menu; add programmatically
         toolbar.getMenu().add(0, 1, 0, "清空回收站")
                 .setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
         toolbar.setOnMenuItemClickListener(menuItem -> {
@@ -152,13 +151,20 @@ public class RecycleBinActivity extends AppCompatActivity {
             LinearLayout btnGroup = new LinearLayout(this);
             btnGroup.setOrientation(LinearLayout.VERTICAL);
             btnGroup.setGravity(android.view.Gravity.CENTER);
+            btnGroup.setPadding(dp4, 0, dp8, 0);
 
             Button btnRestore = new Button(this);
             btnRestore.setText("恢复");
             btnRestore.setTextSize(12);
-            btnRestore.setTextColor(getResources().getColor(R.color.colorPrimary));
-            btnRestore.setBackground(null);
-            btnRestore.setPadding(dp8, dp4, dp8, dp4);
+            btnRestore.setTextColor(0xFF1976D2);
+            btnRestore.setBackground(getResources().getDrawable(R.drawable.btn_outline_primary, getTheme()));
+            btnRestore.setPadding(dp12, dp4, dp12, dp4);
+            btnRestore.setMinHeight(0);
+            btnRestore.setMinimumHeight(0);
+            LinearLayout.LayoutParams restoreLp = new LinearLayout.LayoutParams(
+                    (int)(64 * d), LinearLayout.LayoutParams.WRAP_CONTENT);
+            restoreLp.bottomMargin = dp4;
+            btnRestore.setLayoutParams(restoreLp);
             btnRestore.setOnClickListener(v -> confirmRestore(item));
             btnGroup.addView(btnRestore);
 
@@ -166,8 +172,12 @@ public class RecycleBinActivity extends AppCompatActivity {
             btnDel.setText("删除");
             btnDel.setTextSize(12);
             btnDel.setTextColor(0xFFE53935);
-            btnDel.setBackground(null);
-            btnDel.setPadding(dp8, dp4, dp8, dp4);
+            btnDel.setBackground(getResources().getDrawable(R.drawable.btn_outline_danger, getTheme()));
+            btnDel.setPadding(dp12, dp4, dp12, dp4);
+            btnDel.setMinHeight(0);
+            btnDel.setMinimumHeight(0);
+            btnDel.setLayoutParams(new LinearLayout.LayoutParams(
+                    (int)(64 * d), LinearLayout.LayoutParams.WRAP_CONTENT));
             btnDel.setOnClickListener(v -> confirmDeletePermanently(item));
             btnGroup.addView(btnDel);
 

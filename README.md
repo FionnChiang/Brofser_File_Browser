@@ -41,6 +41,8 @@
 - **权限管理**：兼容Android 11+的存储权限管理
 - **文件提供器**：支持通过FileProvider分享文件
 - **多语言支持**：中文界面
+- **回收站功能**：支持文件删除到回收站，可恢复或永久删除
+- **后台任务管理**：支持文件操作的进度跟踪和取消
 
 ## 技术架构
 
@@ -56,24 +58,7 @@
 - `androidx.recyclerview:recyclerview:1.3.2`
 - `androidx.viewpager2:viewpager2:1.0.0`
 
-### 项目结构
-```
-app/src/main/java/com/example/filebrowser/
-├── MainActivity.java          # 主界面，文件浏览核心逻辑
-├── FileAdapter.java          # 文件列表适配器
-├── FileItem.java             # 文件数据模型
-├── FileClipboard.java        # 剪切板功能
-├── ImageViewerActivity.java  # 图片查看器
-├── VideoPlayerActivity.java  # 视频播放器
-├── AudioPlayerActivity.java  # 音频播放器
-├── TextViewerActivity.java   # 文本查看器
-├── SettingsActivity.java     # 设置界面
-├── CropActivity.java         # 图片裁剪（预留）
-├── CropImageView.java        # 图片裁剪视图
-├── ZoomImageView.java        # 图片缩放视图
-├── ImagePagerAdapter.java    # 图片分页适配器
-└── ...
-```
+
 
 ## 安装与运行
 
@@ -162,6 +147,14 @@ app/src/main/java/com/example/filebrowser/
 
 ## 版本历史
 
+### v1.2.0 (2026-03-27)
+- **新增回收站功能**：支持文件删除到回收站，可恢复或永久删除
+- **后台任务管理**：添加全局任务管理器，支持进度跟踪和取消操作
+- **多选模式安全拦截**：剪贴板有内容时禁止进入多选模式，防止误操作
+- **回收站界面优化**：改进按钮样式和图标设计
+- **设置菜单图标更新**：为设置菜单项添加图标
+- **UI细节改进**：优化暗色主题下的显示效果
+
 ### v1.1.0 (2026-03-21)
 - **新增解压功能**：支持ZIP、7z、TAR（包括GZ/BZ2/XZ压缩）、RAR等多种归档格式
 - **新增图片裁剪功能**：支持自定义背景图片裁剪
@@ -177,10 +170,6 @@ app/src/main/java/com/example/filebrowser/
 - 媒体预览（图片、视频、音频、文本）
 - 自定义设置和视图选项
 
-## 截图预览
 
-（此处可添加应用截图）
-
----
 
 **注意**：本项目为学习用途，实际使用时请注意文件安全。建议在测试设备上使用，避免重要数据丢失。
