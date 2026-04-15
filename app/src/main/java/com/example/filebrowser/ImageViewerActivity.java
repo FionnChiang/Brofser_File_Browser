@@ -1,6 +1,9 @@
 package com.example.filebrowser;
 
 import android.os.Bundle;
+import android.view.GestureDetector;
+import android.view.MotionEvent;
+import android.view.View;
 
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.Toolbar;
@@ -18,14 +21,17 @@ public class ImageViewerActivity extends AppCompatActivity {
     };
 
     private ViewPager2 viewPager;
+    private Toolbar toolbar;
     private final List<String> imageList = new ArrayList<>();
+    private boolean uiVisible = true;
+    private GestureDetector gestureDetector;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_image_viewer);
 
-        Toolbar toolbar = findViewById(R.id.toolbar);
+        toolbar = findViewById(R.id.toolbar);
         setSupportActionBar(toolbar);
         if (getSupportActionBar() != null) getSupportActionBar().setDisplayHomeAsUpEnabled(true);
 
@@ -39,7 +45,6 @@ public class ImageViewerActivity extends AppCompatActivity {
         ImagePagerAdapter adapter = new ImagePagerAdapter(imageList);
         viewPager.setAdapter(adapter);
         viewPager.setCurrentItem(startIndex, false);
-        // 预加载左右各一页，滑动时无需等待
         viewPager.setOffscreenPageLimit(1);
 
         viewPager.registerOnPageChangeCallback(new ViewPager2.OnPageChangeCallback() {
@@ -50,6 +55,34 @@ public class ImageViewerActivity extends AppCompatActivity {
         });
 
         updateTitle(startIndex);
+
+        // 单击切换 UI 显示/隐藏，不影响翻页和缩放
+        gestureDetector = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
+            @Override
+            public boolean onSingleTapConfirmed(MotionEvent e) {
+                toggleUi();
+                return true;
+            }
+        });
+    }
+
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent ev) {
+        if (gestureDetector != null) gestureDetector.onTouchEvent(ev);
+        return super.dispatchTouchEvent(ev);
+    }
+
+    private void toggleUi() {
+        uiVisible = !uiVisible;
+        if (uiVisible) {
+            toolbar.setVisibility(View.VISIBLE);
+            toolbar.animate().alpha(1f).translationY(0).setDuration(200).start();
+        } else {
+            toolbar.animate().alpha(0f).translationY(-toolbar.getHeight())
+                    .setDuration(200)
+                    .withEndAction(() -> toolbar.setVisibility(View.GONE))
+                    .start();
+        }
     }
 
     // ─── 构建同目录图片列表 ────────────────────────────────────────────────────

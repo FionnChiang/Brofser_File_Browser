@@ -1,8 +1,13 @@
 package com.example.filebrowser;
 
 import android.Manifest;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
+import android.os.storage.StorageManager;
+import android.os.storage.StorageVolume;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -102,7 +107,14 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
 
     private static final int PERMISSION_REQUEST_CODE = 100;
     private static final int MANAGE_STORAGE_REQUEST_CODE = 101;
-    private static final int SHORTCUT_ID_BASE = 10000;
+    private static final int SHORTCUT_ID_BASE  = 10000;
+    private static final int EXTERNAL_ID_BASE  = 20000;
+
+    /** 存储分析器标签的哨兵路径 */
+    private static final String ANALYZER_PATH = "/__analyzer__";
+
+    private final List<File> externalVolumes = new ArrayList<>();
+    private BroadcastReceiver storageReceiver;
 
     // 多标签状态：每个标签存储当前所在目录
     private final List<File> tabDirectories = new ArrayList<>();
@@ -161,6 +173,7 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
 
     // 快速滚动条
     private View fastScrollThumb;
+    private StorageAnalyzerView analyzerOverlay;
     private final Handler scrollHideHandler = new Handler(Looper.getMainLooper());
     private Runnable scrollHideRunnable;
 
@@ -210,7 +223,14 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
         navigationView.setNavigationItemSelectedListener(item -> {
             drawerLayout.closeDrawers();
             int id = item.getItemId();
-            if (id >= SHORTCUT_ID_BASE && id < SHORTCUT_ID_BASE + shortcutPaths.size()) {
+            if (id >= EXTERNAL_ID_BASE && id < EXTERNAL_ID_BASE + externalVolumes.size()) {
+                File extRoot = externalVolumes.get(id - EXTERNAL_ID_BASE);
+                tabDirectories.add(extRoot);
+                activeTabIndex = tabDirectories.size() - 1;
+                renderTabBar();
+                loadFiles(extRoot);
+                tabScroll.post(() -> tabScroll.fullScroll(HorizontalScrollView.FOCUS_RIGHT));
+            } else if (id >= SHORTCUT_ID_BASE && id < SHORTCUT_ID_BASE + shortcutPaths.size()) {
                 loadFiles(new File(shortcutPaths.get(id - SHORTCUT_ID_BASE)));
             } else if (id == R.id.nav_recycle_bin) {
                 startActivity(new Intent(this, RecycleBinActivity.class));
@@ -240,7 +260,8 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
         bottomActionBar = findViewById(R.id.bottomActionBar);
         clipboardActionBar = findViewById(R.id.clipboardActionBar);
         tvSelectionCount = findViewById(R.id.tvSelectionCount);
-        fastScrollThumb = findViewById(R.id.fastScrollThumb);
+        fastScrollThumb  = findViewById(R.id.fastScrollThumb);
+        analyzerOverlay  = findViewById(R.id.analyzerOverlay);
         floatingBall = findViewById(R.id.floatingBall);
         floatingBallPercent = findViewById(R.id.floatingBallPercent);
         floatingBallCount = findViewById(R.id.floatingBallCount);
@@ -1281,6 +1302,9 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
         if (id == R.id.action_search) {
             enterSearchMode();
             return true;
+        } else if (id == R.id.action_storage_analyzer) {
+            openAnalyzerTab();
+            return true;
         } else if (id == R.id.action_random_folder) {
             navigateToRandomFolder();
             return true;
@@ -1515,20 +1539,66 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
         tabScroll.post(() -> tabScroll.fullScroll(HorizontalScrollView.FOCUS_RIGHT));
     }
 
+    private boolean isAnalyzerTab(int index) {
+        return index >= 0 && index < tabDirectories.size()
+                && ANALYZER_PATH.equals(tabDirectories.get(index).getAbsolutePath());
+    }
+
+    private void openAnalyzerTab() {
+        // 复用已有分析器标签
+        for (int i = 0; i < tabDirectories.size(); i++) {
+            if (isAnalyzerTab(i)) { switchToTab(i); return; }
+        }
+        tabDirectories.add(new File(ANALYZER_PATH));
+        activeTabIndex = tabDirectories.size() - 1;
+        renderTabBar();
+        showAnalyzerOverlay();
+        tabScroll.post(() -> tabScroll.fullScroll(HorizontalScrollView.FOCUS_RIGHT));
+    }
+
+    private void showAnalyzerOverlay() {
+        if (analyzerOverlay == null) return;
+        recyclerView.setVisibility(View.GONE);
+        breadcrumbScroll.setVisibility(View.GONE);
+        analyzerOverlay.setVisibility(View.VISIBLE);
+        analyzerOverlay.activate();
+        if (getSupportActionBar() != null) getSupportActionBar().setTitle("存储分析");
+    }
+
+    private void hideAnalyzerOverlay() {
+        if (analyzerOverlay == null) return;
+        analyzerOverlay.setVisibility(View.GONE);
+        analyzerOverlay.deactivate();
+        recyclerView.setVisibility(View.VISIBLE);
+        if (!isSearchMode) breadcrumbScroll.setVisibility(View.VISIBLE);
+    }
+
     private void switchToTab(int index) {
         if (index < 0 || index >= tabDirectories.size()) return;
+        // 离开分析器标签时停止轮询
+        if (isAnalyzerTab(activeTabIndex) && !isAnalyzerTab(index)) hideAnalyzerOverlay();
         activeTabIndex = index;
         renderTabBar();
-        loadFiles(tabDirectories.get(activeTabIndex));
+        if (isAnalyzerTab(index)) {
+            showAnalyzerOverlay();
+        } else {
+            loadFiles(tabDirectories.get(activeTabIndex));
+        }
     }
 
     private void closeTab(int index) {
+        if (isAnalyzerTab(index) && analyzerOverlay != null) analyzerOverlay.deactivate();
         if (tabDirectories.size() == 1) { finish(); return; }
         tabDirectories.remove(index);
         if (activeTabIndex >= tabDirectories.size()) activeTabIndex = tabDirectories.size() - 1;
         else if (activeTabIndex > index) activeTabIndex--;
         renderTabBar();
-        loadFiles(tabDirectories.get(activeTabIndex));
+        if (isAnalyzerTab(activeTabIndex)) {
+            showAnalyzerOverlay();
+        } else {
+            hideAnalyzerOverlay();
+            loadFiles(tabDirectories.get(activeTabIndex));
+        }
     }
 
     private void renderTabBar() {
@@ -1548,8 +1618,10 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
             ImageButton btnClose = tabView.findViewById(R.id.btnCloseTab);
 
             File root = Environment.getExternalStorageDirectory();
-            String tabName = dir.getAbsolutePath().equals(root.getAbsolutePath())
-                    ? "存储" : dir.getName();
+            String tabName;
+            if (ANALYZER_PATH.equals(dir.getAbsolutePath())) tabName = "存储分析";
+            else if (dir.getAbsolutePath().equals(root.getAbsolutePath())) tabName = "存储";
+            else tabName = dir.getName();
             tvName.setText(tabName);
 
             if (isActive) {
@@ -1638,6 +1710,10 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
     protected void onDestroy() {
         super.onDestroy();
         TaskManager.get().removeListener(taskBallListener);
+        if (storageReceiver != null) {
+            unregisterReceiver(storageReceiver);
+            storageReceiver = null;
+        }
     }
 
     // ─── 快速滚动条 ───────────────────────────────────────────────────────────
@@ -1708,10 +1784,12 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
     // ─── 文件加载 ─────────────────────────────────────────────────────────────
 
     private void loadFiles(File directory) {
-        if (directory == null || !directory.exists()) {
+        if (directory == null || ANALYZER_PATH.equals(directory.getAbsolutePath())) return;
+        if (!directory.exists()) {
             toast("无法访问该目录");
             return;
         }
+        hideAnalyzerOverlay();
 
         // 退出多选模式
         if (adapter != null && adapter.isMultiSelectMode()) {
@@ -1877,34 +1955,175 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
         }
     }
 
+    // ─── 文件打开 ──────────────────────────────────────────────────────────────
+
     private void openFile(FileItem fileItem) {
         File file = fileItem.getFile();
         if (!file.exists() || !file.canRead()) { toast("无法读取文件"); return; }
+        String category = FileOpenPrefs.categoryForType(fileItem.getType());
+        String pref     = FileOpenPrefs.get(this, category);
+        if (FileOpenPrefs.BUILTIN.equals(pref)) {
+            openWithBuiltin(fileItem);
+        } else if (!FileOpenPrefs.ASK.equals(pref)) {
+            if (!tryOpenWithPackage(file, fileItem.getType(), pref)) {
+                // 首选应用已被卸载，重置为"每次询问"
+                FileOpenPrefs.set(this, category, FileOpenPrefs.ASK);
+                showOpenWithDialog(fileItem);
+            }
+        } else {
+            showOpenWithDialog(fileItem);
+        }
+    }
+
+    /** 使用内置播放器打开 */
+    private void openWithBuiltin(FileItem fileItem) {
+        File file = fileItem.getFile();
         Intent intent;
         switch (fileItem.getType()) {
             case FileItem.TYPE_IMAGE:
                 intent = new Intent(this, ImageViewerActivity.class);
                 intent.putExtra("file_path", file.getAbsolutePath());
-                startActivity(intent);
-                break;
+                startActivity(intent); break;
             case FileItem.TYPE_VIDEO:
                 intent = new Intent(this, VideoPlayerActivity.class);
                 intent.putExtra("file_path", file.getAbsolutePath());
-                startActivity(intent);
-                break;
+                startActivity(intent); break;
             case FileItem.TYPE_AUDIO:
                 intent = new Intent(this, AudioPlayerActivity.class);
                 intent.putExtra("file_path", file.getAbsolutePath());
-                startActivity(intent);
-                break;
+                startActivity(intent); break;
             case FileItem.TYPE_TEXT:
                 intent = new Intent(this, TextViewerActivity.class);
                 intent.putExtra("file_path", file.getAbsolutePath());
-                startActivity(intent);
-                break;
+                startActivity(intent); break;
             default:
-                toast("不支持打开此类型文件");
-                break;
+                toast("不支持打开此类型文件"); break;
+        }
+    }
+
+    /** 用指定包名的应用打开，失败返回 false */
+    private boolean tryOpenWithPackage(File file, int fileType, String pkg) {
+        try {
+            Uri uri = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", file);
+            Intent intent = new Intent(Intent.ACTION_VIEW);
+            intent.setDataAndType(uri, getMimeTypeForFile(file, fileType));
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            intent.setPackage(pkg);
+            startActivity(intent);
+            return true;
+        } catch (Exception e) { return false; }
+    }
+
+    private String getMimeTypeForFile(File file, int fileType) {
+        switch (fileType) {
+            case FileItem.TYPE_IMAGE: return "image/*";
+            case FileItem.TYPE_VIDEO: return "video/*";
+            case FileItem.TYPE_AUDIO: return "audio/*";
+            case FileItem.TYPE_TEXT:  return "text/plain";
+            default:
+                String m = android.webkit.MimeTypeMap.getSingleton()
+                        .getMimeTypeFromExtension(
+                                android.webkit.MimeTypeMap.getFileExtensionFromUrl(
+                                        file.getName().toLowerCase()));
+                return m != null ? m : "*/*";
+        }
+    }
+
+    // ─── 打开方式选择器 ───────────────────────────────────────────────────────
+
+    static class AppChoice {
+        final String label;
+        final android.graphics.drawable.Drawable icon;
+        final String key; // FileOpenPrefs.BUILTIN 或包名
+
+        AppChoice(String label, android.graphics.drawable.Drawable icon, String key) {
+            this.label = label; this.icon = icon; this.key = key;
+        }
+    }
+
+    private List<AppChoice> buildAppChoices(File file, int fileType, String mime) {
+        List<AppChoice> list = new ArrayList<>();
+        // 内置播放器（仅有对应类型时才加入）
+        if (fileType != FileItem.TYPE_OTHER) {
+            list.add(new AppChoice("内置播放器",
+                    getDrawable(R.mipmap.ic_launcher), FileOpenPrefs.BUILTIN));
+        }
+        // 系统应用
+        android.content.pm.PackageManager pm = getPackageManager();
+        Uri uri;
+        try {
+            uri = FileProvider.getUriForFile(this, getPackageName() + ".fileprovider", file);
+        } catch (Exception e) { return list; }
+        Intent query = new Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime);
+        query.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        List<android.content.pm.ResolveInfo> resolved =
+                pm.queryIntentActivities(query, android.content.pm.PackageManager.MATCH_DEFAULT_ONLY);
+        for (android.content.pm.ResolveInfo ri : resolved) {
+            String pkg = ri.activityInfo.packageName;
+            if (pkg.equals(getPackageName())) continue; // 跳过自身
+            list.add(new AppChoice(
+                    ri.loadLabel(pm).toString(), ri.loadIcon(pm), pkg));
+        }
+        return list;
+    }
+
+    private void showOpenWithDialog(FileItem fileItem) {
+        File file = fileItem.getFile();
+        String category = FileOpenPrefs.categoryForType(fileItem.getType());
+        String mime     = getMimeTypeForFile(file, fileItem.getType());
+        List<AppChoice> choices = buildAppChoices(file, fileItem.getType(), mime);
+        if (choices.isEmpty()) { toast("没有可用的应用"); return; }
+
+        final int[] selected = {0};
+
+        // 构建列表适配器
+        android.widget.ArrayAdapter<AppChoice> adapter =
+                new android.widget.ArrayAdapter<AppChoice>(this,
+                        android.R.layout.select_dialog_singlechoice, choices) {
+            @Override
+            public android.view.View getView(int pos, android.view.View cv, android.view.ViewGroup p) {
+                android.widget.CheckedTextView ctv =
+                        (android.widget.CheckedTextView) super.getView(pos, cv, p);
+                AppChoice c = getItem(pos);
+                ctv.setText(c.label);
+                if (c.icon != null) {
+                    c.icon.setBounds(0, 0, 80, 80);
+                    ctv.setCompoundDrawables(c.icon, null, null, null);
+                    ctv.setCompoundDrawablePadding(20);
+                }
+                return ctv;
+            }
+        };
+
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setTitle("选择打开方式");
+        builder.setSingleChoiceItems(adapter, 0, (d, which) -> selected[0] = which);
+        builder.setNeutralButton("仅此一次", null);
+        builder.setPositiveButton("始终",    null);
+        builder.setNegativeButton("取消",    null);
+
+        AlertDialog dialog = builder.create();
+        dialog.setOnShowListener(d -> {
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> {
+                dialog.dismiss();
+                doOpenWithChoice(file, fileItem.getType(), choices.get(selected[0]));
+            });
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                dialog.dismiss();
+                AppChoice c = choices.get(selected[0]);
+                FileOpenPrefs.set(this, category, c.key);
+                doOpenWithChoice(file, fileItem.getType(), c);
+            });
+        });
+        dialog.show();
+    }
+
+    private void doOpenWithChoice(File file, int fileType, AppChoice choice) {
+        if (FileOpenPrefs.BUILTIN.equals(choice.key)) {
+            // 用虚拟 FileItem 调内置播放器
+            openWithBuiltin(new FileItem(file.getName(), file, fileType));
+        } else {
+            tryOpenWithPackage(file, fileType, choice.key);
         }
     }
 
@@ -1916,7 +2135,26 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
         applyBackground();
         saveContentFrameDimensions();
         refreshNavShortcuts();
-        if (!isSearchMode && !tabDirectories.isEmpty()) loadFiles(tabDirectories.get(activeTabIndex));
+        refreshExternalVolumes();
+        // 注册存储设备插拔广播
+        if (storageReceiver == null) {
+            storageReceiver = new BroadcastReceiver() {
+                @Override public void onReceive(Context ctx, Intent intent) {
+                    refreshExternalVolumes();
+                }
+            };
+            IntentFilter filter = new IntentFilter();
+            filter.addAction(Intent.ACTION_MEDIA_MOUNTED);
+            filter.addAction(Intent.ACTION_MEDIA_REMOVED);
+            filter.addAction(Intent.ACTION_MEDIA_UNMOUNTED);
+            filter.addAction(Intent.ACTION_MEDIA_EJECT);
+            filter.addDataScheme("file");
+            registerReceiver(storageReceiver, filter);
+        }
+        if (!isSearchMode && !tabDirectories.isEmpty()) {
+            if (isAnalyzerTab(activeTabIndex)) showAnalyzerOverlay();
+            else loadFiles(tabDirectories.get(activeTabIndex));
+        }
     }
 
     private void applyBackground() {
@@ -2075,6 +2313,151 @@ public class MainActivity extends AppCompatActivity implements FileAdapter.OnFil
             }
         }
         bookmarksItem.setVisible(!shortcutPaths.isEmpty());
+    }
+
+    private void refreshExternalVolumes() {
+        NavigationView nav = findViewById(R.id.navigationView);
+        if (nav == null) return;
+        MenuItem storageGroupItem = nav.getMenu().findItem(R.id.nav_storage_group);
+        if (storageGroupItem == null) return;
+        android.view.SubMenu sub = storageGroupItem.getSubMenu();
+
+        // 记录旧卷，用于检测新增/移除
+        List<File> oldVolumes = new ArrayList<>(externalVolumes);
+
+        // 清除旧菜单条目
+        for (int i = 0; i < externalVolumes.size(); i++) sub.removeItem(EXTERNAL_ID_BASE + i);
+        externalVolumes.clear();
+
+        // 重新枚举
+        List<File> detected = detectExternalVolumes();
+        File primaryRoot = Environment.getExternalStorageDirectory().getAbsoluteFile();
+        for (File root : detected) {
+            if (root.getAbsoluteFile().equals(primaryRoot)) continue;
+            if (!root.exists() || !root.canRead()) continue;
+            externalVolumes.add(root);
+            sub.add(Menu.NONE, EXTERNAL_ID_BASE + externalVolumes.size() - 1,
+                    Menu.NONE, getVolumeName(root))
+                    .setIcon(R.drawable.ic_folder)
+                    .setCheckable(true);
+        }
+
+        // 新插入设备 toast
+        for (File vol : externalVolumes) {
+            boolean isNew = true;
+            for (File old : oldVolumes) {
+                if (old.getAbsolutePath().equals(vol.getAbsolutePath())) { isNew = false; break; }
+            }
+            if (isNew) toast("已检测到外部设备：" + getVolumeName(vol));
+        }
+
+        // 移除的设备：toast + 关闭对应标签
+        for (File old : oldVolumes) {
+            boolean stillPresent = false;
+            for (File vol : externalVolumes) {
+                if (vol.getAbsolutePath().equals(old.getAbsolutePath())) { stillPresent = true; break; }
+            }
+            if (!stillPresent) {
+                toast("外部设备已移除：" + getVolumeName(old));
+                closeTabsUnderPath(old.getAbsolutePath());
+            }
+        }
+    }
+
+    /** 关闭所有目录在指定路径下的标签，至少保留一个标签 */
+    private void closeTabsUnderPath(String rootPath) {
+        for (int i = tabDirectories.size() - 1; i >= 0; i--) {
+            String tabPath = tabDirectories.get(i).getAbsolutePath();
+            if (tabPath.equals(rootPath) || tabPath.startsWith(rootPath + "/")) {
+                if (tabDirectories.size() == 1) {
+                    // 仅剩一个标签时重定向到内部存储
+                    tabDirectories.set(0, Environment.getExternalStorageDirectory());
+                    activeTabIndex = 0;
+                } else {
+                    tabDirectories.remove(i);
+                    if (activeTabIndex >= tabDirectories.size())
+                        activeTabIndex = tabDirectories.size() - 1;
+                    else if (activeTabIndex > i)
+                        activeTabIndex--;
+                }
+            }
+        }
+        renderTabBar();
+        loadFiles(tabDirectories.get(activeTabIndex));
+    }
+
+    /** 枚举所有非主存储外部卷根目录 */
+    private List<File> detectExternalVolumes() {
+        List<File> result = new ArrayList<>();
+
+        // ① API 24+：StorageManager.getStorageVolumes() 最可靠
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            StorageManager sm = (StorageManager) getSystemService(Context.STORAGE_SERVICE);
+            if (sm != null) {
+                for (StorageVolume vol : sm.getStorageVolumes()) {
+                    if (vol.isPrimary()) continue;
+                    String state = vol.getState();
+                    if (!Environment.MEDIA_MOUNTED.equals(state)
+                            && !Environment.MEDIA_MOUNTED_READ_ONLY.equals(state)) continue;
+                    File dir = getVolumeDirectory(vol);
+                    if (dir != null) result.add(dir);
+                }
+                if (!result.isEmpty()) return result;
+            }
+        }
+
+        // ② 兜底：getExternalFilesDirs 上溯4层（适用于已挂载且 app 目录已创建的情况）
+        File primaryRoot = Environment.getExternalStorageDirectory().getAbsoluteFile();
+        File[] appDirs = ContextCompat.getExternalFilesDirs(this, null);
+        for (File appDir : appDirs) {
+            if (appDir == null) continue;
+            File root = appDir;
+            for (int i = 0; i < 4; i++) {
+                File parent = root.getParentFile();
+                if (parent == null) { root = null; break; }
+                root = parent;
+            }
+            if (root == null || root.getAbsoluteFile().equals(primaryRoot)) continue;
+            result.add(root);
+        }
+        return result;
+    }
+
+    /** 获取 StorageVolume 对应的根目录（含反射兜底） */
+    @SuppressWarnings({"JavaReflectionMemberAccess", "deprecation"})
+    private File getVolumeDirectory(StorageVolume vol) {
+        // API 30+ 官方 API
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                File dir = vol.getDirectory();
+                if (dir != null) return dir;
+            } catch (Exception ignored) {}
+        }
+        // API 24-29 反射
+        try {
+            java.lang.reflect.Method m = vol.getClass().getMethod("getPathFile");
+            Object r = m.invoke(vol);
+            if (r instanceof File) return (File) r;
+        } catch (Exception ignored) {}
+        try {
+            java.lang.reflect.Method m = vol.getClass().getMethod("getPath");
+            Object r = m.invoke(vol);
+            if (r instanceof String) return new File((String) r);
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    private String getVolumeName(File root) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            StorageManager sm = (StorageManager) getSystemService(Context.STORAGE_SERVICE);
+            if (sm != null) {
+                try {
+                    StorageVolume vol = sm.getStorageVolume(root);
+                    if (vol != null) return vol.getDescription(this);
+                } catch (Exception ignored) {}
+            }
+        }
+        return root.getName();
     }
 
     // ─── 搜索 ──────────────────────────────────────────────────────────────────

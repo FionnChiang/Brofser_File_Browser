@@ -2,11 +2,15 @@ package com.example.filebrowser;
 
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.drawable.Drawable;
 import android.net.Uri;
 import android.os.Bundle;
 import android.view.View;
+import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.ImageView;
 import android.widget.SeekBar;
@@ -20,6 +24,8 @@ import androidx.appcompat.widget.SwitchCompat;
 import androidx.appcompat.widget.Toolbar;
 
 import java.io.File;
+import java.util.ArrayList;
+import java.util.List;
 
 public class SettingsActivity extends AppCompatActivity {
 
@@ -36,6 +42,20 @@ public class SettingsActivity extends AppCompatActivity {
     private Button       btnClearBg;
     private SeekBar      seekBarDim;
     private TextView     tvDimValue;
+
+    // 打开方式副标题 Views（顺序与 OPEN_WITH_CATS 一致）
+    private static final String[] OPEN_WITH_CATS = {
+            FileOpenPrefs.CAT_IMAGE, FileOpenPrefs.CAT_VIDEO,
+            FileOpenPrefs.CAT_AUDIO, FileOpenPrefs.CAT_TEXT, FileOpenPrefs.CAT_OTHER
+    };
+    private static final int[] OPEN_WITH_ITEM_IDS = {
+            R.id.itemOpenImage, R.id.itemOpenVideo,
+            R.id.itemOpenAudio, R.id.itemOpenText, R.id.itemOpenOther
+    };
+    private static final int[] OPEN_WITH_DESC_IDS = {
+            R.id.tvOpenImageDesc, R.id.tvOpenVideoDesc,
+            R.id.tvOpenAudioDesc, R.id.tvOpenTextDesc, R.id.tvOpenOtherDesc
+    };
 
     private static final String[] SORT_LABELS = {
             "文件名 A-Z", "文件名 Z-A",
@@ -73,6 +93,7 @@ public class SettingsActivity extends AppCompatActivity {
 
         loadPrefs();
         setupListeners();
+        refreshOpenWithDescs();
     }
 
     private void loadPrefs() {
@@ -101,6 +122,12 @@ public class SettingsActivity extends AppCompatActivity {
 
         // 排序方式
         findViewById(R.id.itemSortOrder).setOnClickListener(v -> showSortDialog());
+
+        // 打开方式
+        for (int i = 0; i < OPEN_WITH_CATS.length; i++) {
+            final String cat = OPEN_WITH_CATS[i];
+            findViewById(OPEN_WITH_ITEM_IDS[i]).setOnClickListener(v -> showOpenWithDialog(cat));
+        }
 
         // 背景图片
         findViewById(R.id.itemBackground).setOnClickListener(v -> pickImage());
@@ -191,4 +218,84 @@ public class SettingsActivity extends AppCompatActivity {
 
     @Override
     public boolean onSupportNavigateUp() { finish(); return true; }
+
+    // ─── 打开方式 ──────────────────────────────────────────────────────────────
+
+    private void refreshOpenWithDescs() {
+        for (int i = 0; i < OPEN_WITH_CATS.length; i++) {
+            TextView tv = findViewById(OPEN_WITH_DESC_IDS[i]);
+            if (tv != null) tv.setText(FileOpenPrefs.getDisplayName(this, OPEN_WITH_CATS[i]));
+        }
+    }
+
+    /** 查询能处理该 MIME 类型的系统应用 */
+    private List<ResolveInfo> queryAppsForMime(String mime) {
+        Intent q = new Intent(Intent.ACTION_VIEW).setType(mime);
+        return getPackageManager().queryIntentActivities(
+                q, PackageManager.MATCH_DEFAULT_ONLY);
+    }
+
+    private void showOpenWithDialog(String category) {
+        String mime = FileOpenPrefs.mimeForCategory(category);
+
+        // 构建选项列表
+        List<String>   labels = new ArrayList<>();
+        List<String>   keys   = new ArrayList<>();
+        List<Drawable> icons  = new ArrayList<>();
+
+        // "每次询问" 始终第一项
+        labels.add("每次询问");
+        keys.add(FileOpenPrefs.ASK);
+        icons.add(getDrawable(android.R.drawable.ic_menu_help));
+
+        // 内置播放器（非"其他"类型才有）
+        if (!FileOpenPrefs.CAT_OTHER.equals(category)) {
+            labels.add("内置播放器");
+            keys.add(FileOpenPrefs.BUILTIN);
+            icons.add(getDrawable(R.mipmap.ic_launcher));
+        }
+
+        // 系统应用
+        PackageManager pm = getPackageManager();
+        for (ResolveInfo ri : queryAppsForMime(mime)) {
+            if (ri.activityInfo.packageName.equals(getPackageName())) continue;
+            labels.add(ri.loadLabel(pm).toString());
+            keys.add(ri.activityInfo.packageName);
+            icons.add(ri.loadIcon(pm));
+        }
+
+        // 当前选中项
+        String current = FileOpenPrefs.get(this, category);
+        int checkedIdx = 0;
+        for (int i = 0; i < keys.size(); i++) {
+            if (keys.get(i).equals(current)) { checkedIdx = i; break; }
+        }
+
+        ArrayAdapter<String> adapter = new ArrayAdapter<String>(
+                this, android.R.layout.select_dialog_singlechoice, labels) {
+            @Override
+            public View getView(int pos, View cv, android.view.ViewGroup p) {
+                android.widget.CheckedTextView ctv =
+                        (android.widget.CheckedTextView) super.getView(pos, cv, p);
+                Drawable ic = icons.get(pos);
+                if (ic != null) {
+                    ic.setBounds(0, 0, 72, 72);
+                    ctv.setCompoundDrawables(ic, null, null, null);
+                    ctv.setCompoundDrawablePadding(16);
+                }
+                return ctv;
+            }
+        };
+
+        final int[] sel = {checkedIdx};
+        new AlertDialog.Builder(this)
+                .setTitle("设置默认打开方式：" + FileOpenPrefs.labelForCategory(category))
+                .setSingleChoiceItems(adapter, checkedIdx, (d, which) -> sel[0] = which)
+                .setPositiveButton("确定", (d, w) -> {
+                    FileOpenPrefs.set(this, category, keys.get(sel[0]));
+                    refreshOpenWithDescs();
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
 }

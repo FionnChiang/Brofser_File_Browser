@@ -1,13 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <menu xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <group android:id="@+id/group_locations" android:checkableBehavior="single">
-        <item
-            android:id="@+id/nav_storage"
-            android:icon="@drawable/ic_folder"
-            android:title="本地存储"
-            android:checked="true" />
-    </group>
+    <!-- 存储设备：本地 + 外部（外部条目由 MainActivity 动态填充） -->
+    <item
+        android:id="@+id/nav_storage_group"
+        android:title="存储设备">
+        <menu>
+            <item
+                android:id="@+id/nav_storage"
+                android:icon="@drawable/ic_folder"
+                android:title="本地存储"
+                android:checked="true" />
+        </menu>
+    </item>
 
     <item android:title="快捷访问">
         <menu>

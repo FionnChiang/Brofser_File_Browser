@@ -9,6 +9,12 @@
         app:showAsAction="always" />
 
     <item
+        android:id="@+id/action_storage_analyzer"
+        android:icon="@drawable/ic_storage_analyzer"
+        android:title="存储分析"
+        app:showAsAction="always" />
+
+    <item
         android:id="@+id/action_random_folder"
         android:icon="@drawable/ic_dice"
         android:title="随机文件夹"

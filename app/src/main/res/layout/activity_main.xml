@@ -173,6 +173,13 @@
                     android:visibility="gone" />
             </FrameLayout>
 
+            <!-- 存储分析器 overlay（分析标签激活时显示） -->
+            <com.example.filebrowser.StorageAnalyzerView
+                android:id="@+id/analyzerOverlay"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:visibility="gone" />
+
         </FrameLayout>
 
         <!-- 多选：选中数量栏 -->
